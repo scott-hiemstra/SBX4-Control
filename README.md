@@ -134,6 +134,15 @@ crate). The commands are the G6 set documented in
 | Set output      | `5a 2c 05 00 <code> 00 00 00`            |
 | Firmware        | `5a 09 01 02`                            |
 
+## Contributors
+
+- Scott Hiemstra ([@scott-hiemstra](https://github.com/scott-hiemstra)): idea,
+  testing on real hardware, maintainer
+- Claude (Anthropic): design and implementation
+
+Contributions are welcome: open an issue or a pull request, and add yourself
+here when you do.
+
 ## Credits
 
 Thanks to **Creative Technology** for the Sound Blaster X4: a great-sounding
