@@ -1,0 +1,27 @@
+[package]
+name = "sbx4-control"
+version = "0.4.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Control panel for the Creative Sound Blaster X4 on Linux"
+license = "MIT"
+authors = ["Scott Hiemstra"]
+repository = "https://github.com/scott-hiemstra/SBX4-Control"
+
+[dependencies]
+# Feature levels match Ubuntu 22.04 (GTK 4.6, libadwaita 1.1), the oldest target.
+gtk = { version = "0.9", package = "gtk4", features = ["v4_6"] }
+adw = { version = "0.7", package = "libadwaita", features = ["v1_1"] }
+alsa = "0.9"
+aes-gcm = "0.10"
+rand = "0.8"
+nix = { version = "0.29", features = ["term", "fs", "process", "signal"] }
+ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-channel = "2"
+rustfft = "6"
+
+[profile.release]
+lto = true
+strip = true

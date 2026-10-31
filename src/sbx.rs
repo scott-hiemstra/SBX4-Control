@@ -1,0 +1,553 @@
+//! SBX-style effects, approximated with a PipeWire filter-chain sink placed in
+//! front of the X4's sink. On Windows these effects run in Creative's driver on
+//! the PC, not on the X4, so this is the Linux counterpart rather than a port.
+//!
+//! The graph only uses plugins that exist in PipeWire 1.0 (Ubuntu 24.04), plus
+//! the LSP stereo compressor for Smart Volume when lsp-plugins-lv2 is installed.
+
+use std::fmt::Write as _;
+use std::fs;
+use std::io;
+use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use gtk::glib;
+use serde::{Deserialize, Serialize};
+
+pub const SINK_NAME: &str = "sbx4_effects";
+const SINK_DESCRIPTION: &str = "Sound Blaster X4 (SBX)";
+const X4_SINK_PREFIX: &str = "alsa_output.usb-Creative_Technology_Ltd_Sound_Blaster_X4";
+const COMPRESSOR_URI: &str = "http://lsp-plug.in/plugins/lv2/compressor_stereo";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Surround,
+    Dialog,
+    Bass,
+    Crystalizer,
+    SmartVolume,
+}
+
+pub const EFFECTS: [Kind; 5] = [Kind::Surround, Kind::Dialog, Kind::Bass, Kind::Crystalizer, Kind::SmartVolume];
+
+impl Kind {
+    pub fn title(self) -> &'static str {
+        match self {
+            Kind::Surround => "Surround",
+            Kind::Dialog => "Dialog+",
+            Kind::Bass => "Bass",
+            Kind::Crystalizer => "Crystalizer",
+            Kind::SmartVolume => "Smart Volume",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Kind::Surround => "Widens the stereo image; bass stays centered",
+            Kind::Dialog => "Lifts voices in the center of the mix",
+            Kind::Bass => "Adds low-end weight below 90 Hz",
+            Kind::Crystalizer => "Adds treble harmonics and air for crisper detail",
+            Kind::SmartVolume => "Evens out loud and quiet passages",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Effect {
+    pub on: bool,
+    /// 0.0–1.0
+    pub level: f64,
+}
+
+/// Bass management for the X4's subwoofer output (2.1 profile).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Sub {
+    pub on: bool,
+    /// Crossover frequency, Hz.
+    pub crossover: f64,
+    /// Sub level, dB.
+    pub level: f64,
+    /// Take the bass below the crossover out of the speakers.
+    pub high_pass: bool,
+    pub invert: bool,
+}
+
+impl Default for Sub {
+    fn default() -> Self {
+        Self { on: false, crossover: 80.0, level: 0.0, high_pass: true, invert: false }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Settings {
+    pub enabled: bool,
+    pub effects: [Effect; 5],
+    #[serde(default)]
+    pub sub: Sub,
+    /// The X4 is on its headphone output; the crossover is bypassed. Not saved.
+    #[serde(skip)]
+    pub headphones: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self { enabled: false, effects: [Effect { on: false, level: 0.5 }; 5], sub: Sub::default(), headphones: false }
+    }
+}
+
+impl Settings {
+    pub fn effect(&self, kind: Kind) -> Effect {
+        self.effects[kind as usize]
+    }
+
+    pub fn effect_mut(&mut self, kind: Kind) -> &mut Effect {
+        &mut self.effects[kind as usize]
+    }
+
+    /// Whether the filter should run: for the effects, the subwoofer, or both.
+    pub fn wants_filter(&self) -> bool {
+        self.enabled || self.sub.on
+    }
+
+    /// The effect's level, or 0 when it or SBX is switched off.
+    fn level(&self, kind: Kind) -> f64 {
+        let e = self.effect(kind);
+        if e.on && self.enabled {
+            e.level
+        } else {
+            0.0
+        }
+    }
+}
+
+fn config_dir() -> PathBuf {
+    glib::user_config_dir().join("sbx4-control")
+}
+
+pub fn load() -> Settings {
+    fs::read(config_dir().join("sbx.json"))
+        .ok()
+        .and_then(|data| serde_json::from_slice(&data).ok())
+        .unwrap_or_default()
+}
+
+pub fn save(settings: &Settings) -> io::Result<()> {
+    fs::create_dir_all(config_dir())?;
+    fs::write(config_dir().join("sbx.json"), serde_json::to_vec_pretty(settings)?)
+}
+
+/// Whether the PipeWire command-line tools the engine drives are installed.
+pub fn tools_available() -> bool {
+    ["pipewire", "pw-cli", "pw-dump", "wpctl"].iter().all(|tool| glib::find_program_in_path(tool).is_some())
+}
+
+/// Whether the LSP compressor used for Smart Volume is installed.
+pub fn compressor_available() -> bool {
+    let mut dirs: Vec<PathBuf> = std::env::var("LV2_PATH")
+        .map(|p| p.split(':').map(PathBuf::from).collect())
+        .unwrap_or_default();
+    dirs.push(glib::home_dir().join(".lv2"));
+    dirs.extend(["/usr/lib/lv2", "/usr/lib/x86_64-linux-gnu/lv2", "/usr/local/lib/lv2"].map(PathBuf::from));
+    dirs.iter().any(|d| d.join("lsp-plugins.lv2/compressor_stereo.ttl").exists())
+}
+
+/// A running filter-chain process and the id of the sink it created.
+pub struct Engine {
+    child: Option<Child>,
+    node_id: Option<u32>,
+    compressor: bool,
+    /// The X4 sink the filter feeds has an LFE channel.
+    lfe: bool,
+}
+
+impl Engine {
+    pub fn new() -> Self {
+        Self { child: None, node_id: None, compressor: compressor_available(), lfe: false }
+    }
+
+    pub fn has_compressor(&self) -> bool {
+        self.compressor
+    }
+
+    pub fn is_running(&mut self) -> bool {
+        match &mut self.child {
+            Some(child) => matches!(child.try_wait(), Ok(None)),
+            None => false,
+        }
+    }
+
+    /// Start the filter process feeding `x4_sink`. Its sink appears shortly
+    /// after; wait for it with [`wait_for_sink`] off the main thread.
+    pub fn spawn(&mut self, settings: &Settings, x4_sink: &Sink) -> io::Result<()> {
+        self.stop();
+        self.lfe = x4_sink.lfe;
+        let path = config_dir().join("sbx-filter.conf");
+        fs::create_dir_all(config_dir())?;
+        fs::write(&path, config(settings, self.compressor, &x4_sink.name, self.lfe))?;
+
+        let mut cmd = Command::new("pipewire");
+        cmd.arg("-c").arg(&path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        // Take the filter down with us if the app dies. Must be spawned from the
+        // main thread: the signal fires when the spawning *thread* exits.
+        unsafe {
+            cmd.pre_exec(|| {
+                nix::sys::prctl::set_pdeathsig(nix::sys::signal::Signal::SIGTERM).map_err(io::Error::from)
+            });
+        }
+        self.child = Some(cmd.spawn()?);
+        Ok(())
+    }
+
+    pub fn set_node(&mut self, id: u32) {
+        self.node_id = Some(id);
+    }
+
+    /// Push all control values to the running filter.
+    pub fn update(&self, settings: &Settings) {
+        let Some(id) = self.node_id else { return };
+        let mut cmd = Command::new("pw-cli");
+        cmd.args(["set-param", &id.to_string(), "Props", &params(settings, self.compressor, self.lfe)])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if let Ok(mut child) = cmd.spawn() {
+            thread::spawn(move || child.wait());
+        }
+    }
+
+    pub fn stop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        self.node_id = None;
+    }
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+pub struct Sink {
+    pub id: u32,
+    pub name: String,
+    /// Has a subwoofer (LFE) channel.
+    pub lfe: bool,
+}
+
+/// The X4's own sink. Blocks briefly on `pw-dump`.
+pub fn x4_sink() -> Option<Sink> {
+    find_sink(|name| name.starts_with(X4_SINK_PREFIX))
+}
+
+/// Wait for the filter's sink to appear; returns its id.
+pub fn wait_for_sink(timeout: Duration) -> Option<u32> {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if let Some(sink) = find_sink(|name| name == SINK_NAME) {
+            return Some(sink.id);
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    None
+}
+
+pub fn set_default_sink(id: u32) {
+    let _ = Command::new("wpctl")
+        .args(["set-default", &id.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+fn find_sink(matches: impl Fn(&str) -> bool) -> Option<Sink> {
+    let output = Command::new("pw-dump").stderr(Stdio::null()).output().ok()?;
+    let objects: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).ok()?;
+    objects.iter().find_map(|o| {
+        let props = o.pointer("/info/props")?;
+        let name = props.get("node.name")?.as_str()?;
+        let is_sink = props.get("media.class")?.as_str()? == "Audio/Sink";
+        let lfe = props.get("audio.position").and_then(|p| p.as_str()).is_some_and(|p| p.split(',').any(|c| c == "LFE"));
+        (is_sink && matches(name)).then(|| Some(Sink { id: o.get("id")?.as_u64()? as u32, name: name.to_owned(), lfe }))?
+    })
+}
+
+fn db_to_gain(db: f64) -> f64 {
+    10f64.powf(db / 20.0)
+}
+
+struct Node {
+    name: String,
+    /// Builtin label, or the LV2 URI for the compressor.
+    plugin: &'static str,
+    controls: Vec<(&'static str, f64)>,
+}
+
+fn node(name: impl Into<String>, plugin: &'static str, controls: &[(&'static str, f64)]) -> Node {
+    Node { name: name.into(), plugin, controls: controls.to_vec() }
+}
+
+/// Build the filter graph for `s`: (nodes, links, graph outputs).
+///
+/// ```text
+/// in_l/in_r → mid/side → Dialog+ (mid peaking) + Surround (high-passed side boost)
+///   → per channel: Bass (low shelf) → Crystalizer (exciter: HPF → x² → HPF, mixed in,
+///     plus an air shelf) → headroom trim → Smart Volume (compressor)
+///   → with `lfe`: Linkwitz-Riley crossover, (L+R)/2 low-passed to the sub
+/// ```
+fn graph(s: &Settings, compressor: bool, lfe: bool) -> (Vec<Node>, Vec<(String, String)>, Vec<String>) {
+    let width = s.level(Kind::Surround) * 1.5;
+    let dialog_db = s.level(Kind::Dialog) * 9.0;
+    let bass_db = s.level(Kind::Bass) * 10.0;
+    let crystal = s.level(Kind::Crystalizer);
+    let (exciter, air_db) = (crystal * 8.0, crystal * 4.0);
+    // Pull the level down as much as the boosts push it up, so they don't clip.
+    let headroom_db = [bass_db * 0.8, dialog_db * 0.6, air_db * 0.5 + crystal * 1.5, width * 3.0]
+        .into_iter()
+        .fold(0.0, f64::max);
+
+    let mut nodes = vec![
+        node("in_l", "copy", &[]),
+        node("in_r", "copy", &[]),
+        node("mid", "mixer", &[("Gain 1", 0.5), ("Gain 2", 0.5)]),
+        node("inv_r", "invert", &[]),
+        node("side", "mixer", &[("Gain 1", 0.5), ("Gain 2", 0.5)]),
+        node("dialog", "bq_peaking", &[("Freq", 2500.0), ("Q", 0.8), ("Gain", dialog_db)]),
+        node("side_hp", "bq_highpass", &[("Freq", 150.0), ("Q", 0.707)]),
+        node("inv_side", "invert", &[]),
+        node("inv_side_hp", "invert", &[]),
+        node("ms_l", "mixer", &[("Gain 1", 1.0), ("Gain 2", 1.0), ("Gain 3", width)]),
+        node("ms_r", "mixer", &[("Gain 1", 1.0), ("Gain 2", 1.0), ("Gain 3", width)]),
+    ];
+    let mut links: Vec<(String, String)> = [
+        ("in_l:Out", "mid:In 1"),
+        ("in_r:Out", "mid:In 2"),
+        ("in_r:Out", "inv_r:In"),
+        ("in_l:Out", "side:In 1"),
+        ("inv_r:Out", "side:In 2"),
+        ("mid:Out", "dialog:In"),
+        ("side:Out", "side_hp:In"),
+        ("side:Out", "inv_side:In"),
+        ("side_hp:Out", "inv_side_hp:In"),
+        // L = mid + side + width·hp(side); R = mid − side − width·hp(side)
+        ("dialog:Out", "ms_l:In 1"),
+        ("side:Out", "ms_l:In 2"),
+        ("side_hp:Out", "ms_l:In 3"),
+        ("dialog:Out", "ms_r:In 1"),
+        ("inv_side:Out", "ms_r:In 2"),
+        ("inv_side_hp:Out", "ms_r:In 3"),
+    ]
+    .iter()
+    .map(|(a, b)| (a.to_string(), b.to_string()))
+    .collect();
+
+    for ch in ["l", "r"] {
+        nodes.extend([
+            node(format!("bass_{ch}"), "bq_lowshelf", &[("Freq", 90.0), ("Q", 0.707), ("Gain", bass_db)]),
+            node(format!("exc_hp_{ch}"), "bq_highpass", &[("Freq", 3000.0), ("Q", 0.707)]),
+            node(format!("exc_sq_{ch}"), "mult", &[]),
+            node(format!("exc_dc_{ch}"), "bq_highpass", &[("Freq", 2000.0), ("Q", 0.707)]),
+            node(format!("cry_{ch}"), "mixer", &[("Gain 1", 1.0), ("Gain 2", exciter)]),
+            node(format!("air_{ch}"), "bq_highshelf", &[("Freq", 8000.0), ("Q", 0.707), ("Gain", air_db)]),
+            node(format!("trim_{ch}"), "mixer", &[("Gain 1", db_to_gain(-headroom_db))]),
+        ]);
+        for (from, to) in [
+            ("ms:Out", "bass:In"),
+            ("bass:Out", "exc_hp:In"),
+            ("exc_hp:Out", "exc_sq:In 1"),
+            ("exc_hp:Out", "exc_sq:In 2"),
+            ("exc_sq:Out", "exc_dc:In"),
+            ("bass:Out", "cry:In 1"),
+            ("exc_dc:Out", "cry:In 2"),
+            ("cry:Out", "air:In"),
+            ("air:Out", "trim:In 1"),
+        ] {
+            let channel = |port: &str| port.replacen(':', &format!("_{ch}:"), 1);
+            links.push((channel(from), channel(to)));
+        }
+    }
+
+    let stereo = if compressor {
+        let smart = s.effect(Kind::SmartVolume);
+        let threshold_db = -12.0 - smart.level * 18.0;
+        let ratio = 2.0 + smart.level * 4.0;
+        let makeup_db = -threshold_db * (1.0 - 1.0 / ratio) * 0.6;
+        nodes.push(node(
+            "comp",
+            COMPRESSOR_URI,
+            &[
+                ("enabled", if smart.on && s.enabled { 1.0 } else { 0.0 }),
+                ("al", db_to_gain(threshold_db)),
+                ("cr", ratio),
+                ("at", 10.0),
+                ("rt", 300.0),
+                ("mk", db_to_gain(makeup_db)),
+            ],
+        ));
+        links.push(("trim_l:Out".into(), "comp:in_l".into()));
+        links.push(("trim_r:Out".into(), "comp:in_r".into()));
+        ["comp:out_l", "comp:out_r"]
+    } else {
+        ["trim_l:Out", "trim_r:Out"]
+    };
+    if !lfe {
+        return (nodes, links, stereo.map(String::from).to_vec());
+    }
+
+    // Two cascaded Butterworth sections per side make a 4th-order
+    // Linkwitz-Riley crossover, whose halves sum flat. Switching it on and off
+    // only changes gains, so it never needs a restart.
+    let sub = s.sub;
+    let active = sub.on && !s.headphones;
+    let xo = sub.crossover;
+    let high_pass = if active && sub.high_pass { 1.0 } else { 0.0 };
+    let polarity = if sub.invert { -1.0 } else { 1.0 };
+    let sub_gain = if active { polarity * db_to_gain(sub.level) } else { 0.0 };
+    for (ch, input) in ["l", "r"].into_iter().zip(stereo) {
+        nodes.extend([
+            node(format!("xo_hp1_{ch}"), "bq_highpass", &[("Freq", xo), ("Q", 0.707)]),
+            node(format!("xo_hp2_{ch}"), "bq_highpass", &[("Freq", xo), ("Q", 0.707)]),
+            // Gain 1: high-passed, Gain 2: full range.
+            node(format!("main_{ch}"), "mixer", &[("Gain 1", high_pass), ("Gain 2", 1.0 - high_pass)]),
+        ]);
+        links.extend([
+            (input.to_owned(), format!("xo_hp1_{ch}:In")),
+            (format!("xo_hp1_{ch}:Out"), format!("xo_hp2_{ch}:In")),
+            (format!("xo_hp2_{ch}:Out"), format!("main_{ch}:In 1")),
+            (input.to_owned(), format!("main_{ch}:In 2")),
+        ]);
+    }
+    nodes.extend([
+        node("sub_sum", "mixer", &[("Gain 1", 0.5), ("Gain 2", 0.5)]),
+        node("xo_lp1", "bq_lowpass", &[("Freq", xo), ("Q", 0.707)]),
+        node("xo_lp2", "bq_lowpass", &[("Freq", xo), ("Q", 0.707)]),
+        node("sub_out", "mixer", &[("Gain 1", sub_gain)]),
+    ]);
+    for (from, to) in [
+        (stereo[0], "sub_sum:In 1"),
+        (stereo[1], "sub_sum:In 2"),
+        ("sub_sum:Out", "xo_lp1:In"),
+        ("xo_lp1:Out", "xo_lp2:In"),
+        ("xo_lp2:Out", "sub_out:In 1"),
+    ] {
+        links.push((from.to_owned(), to.to_owned()));
+    }
+    (nodes, links, vec!["main_l:Out".into(), "main_r:Out".into(), "sub_out:Out".into()])
+}
+
+fn config(s: &Settings, compressor: bool, x4_sink: &str, lfe: bool) -> String {
+    let (nodes, links, outputs) = graph(s, compressor, lfe);
+    let positions = if lfe { "FL FR LFE" } else { "FL FR" };
+    let mut c = String::from(
+        "context.properties = { log.level = 2 }\n\
+         context.spa-libs = {\n    audio.convert.* = audioconvert/libspa-audioconvert\n    support.* = support/libspa-support\n}\n\
+         context.modules = [\n    { name = libpipewire-module-rt args = { } flags = [ ifexists nofail ] }\n    \
+         { name = libpipewire-module-protocol-native }\n    { name = libpipewire-module-client-node }\n    \
+         { name = libpipewire-module-adapter }\n    { name = libpipewire-module-filter-chain\n        args = {\n",
+    );
+    let _ = writeln!(c, "            node.description = \"{SINK_DESCRIPTION}\"\n            media.name = \"{SINK_DESCRIPTION}\"");
+    c.push_str("            filter.graph = {\n                nodes = [\n");
+    for n in &nodes {
+        let kind = if n.plugin.contains("://") {
+            format!("type = lv2 name = {} plugin = \"{}\"", n.name, n.plugin)
+        } else {
+            format!("type = builtin name = {} label = {}", n.name, n.plugin)
+        };
+        let controls: String = n.controls.iter().map(|(k, v)| format!(" \"{k}\" = {v:.6}")).collect();
+        let _ = writeln!(c, "                    {{ {kind} control = {{{controls} }} }}");
+    }
+    c.push_str("                ]\n                links = [\n");
+    for (from, to) in &links {
+        let _ = writeln!(c, "                    {{ output = \"{from}\" input = \"{to}\" }}");
+    }
+    let outputs: String = outputs.iter().map(|o| format!(" \"{o}\"")).collect();
+    let _ = writeln!(
+        c,
+        "                ]\n                inputs = [ \"in_l:In\" \"in_r:In\" ]\n                outputs = [{outputs} ]\n            }}"
+    );
+    // The output is pinned to the X4: tools that grab every stream (EasyEffects)
+    // would otherwise move it into themselves, or onto another sink while the
+    // X4 restarts, and lose the LFE channel.
+    let _ = writeln!(
+        c,
+        "            capture.props = {{\n                node.name = \"{SINK_NAME}\"\n                media.class = Audio/Sink\n                audio.position = [ FL FR ]\n            }}\n            \
+         playback.props = {{\n                node.name = \"{SINK_NAME}.output\"\n                node.passive = true\n                audio.position = [ {positions} ]\n                target.object = \"{x4_sink}\"\n                node.dont-move = true\n                node.dont-reconnect = true\n            }}\n        }}\n    }}\n]"
+    );
+    c
+}
+
+/// All controls as a `pw-cli set-param … Props` argument.
+fn params(s: &Settings, compressor: bool, lfe: bool) -> String {
+    let (nodes, _, _) = graph(s, compressor, lfe);
+    let mut p = String::from("{ params = [");
+    for n in &nodes {
+        for (k, v) in &n.controls {
+            let _ = write!(p, " \"{}:{k}\" {v:.6}", n.name);
+        }
+    }
+    p.push_str(" ] }");
+    p
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn neutral_settings_are_transparent() {
+        let (nodes, _, outputs) = graph(&Settings::default(), true, true);
+        let control = |node: &str, port: &str| {
+            nodes.iter().find(|n| n.name == node).unwrap().controls.iter().find(|(k, _)| *k == port).unwrap().1
+        };
+        assert_eq!(control("ms_l", "Gain 3"), 0.0);
+        assert_eq!(control("dialog", "Gain"), 0.0);
+        assert_eq!(control("bass_r", "Gain"), 0.0);
+        assert_eq!(control("cry_l", "Gain 2"), 0.0);
+        assert_eq!(control("trim_l", "Gain 1"), 1.0);
+        assert_eq!(control("comp", "enabled"), 0.0);
+        assert_eq!(outputs.len(), 3);
+        assert_eq!(control("main_l", "Gain 2"), 1.0);
+        assert_eq!(control("sub_out", "Gain 1"), 0.0);
+    }
+
+    #[test]
+    fn effects_stay_neutral_when_only_the_sub_is_on() {
+        let mut s = Settings::default();
+        s.effects.iter_mut().for_each(|e| e.on = true);
+        s.sub.on = true;
+        assert!(s.wants_filter());
+        let (nodes, _, _) = graph(&s, true, true);
+        let control = |node: &str, port: &str| {
+            nodes.iter().find(|n| n.name == node).unwrap().controls.iter().find(|(k, _)| *k == port).unwrap().1
+        };
+        assert_eq!(control("bass_l", "Gain"), 0.0);
+        assert_eq!(control("comp", "enabled"), 0.0);
+        assert_eq!(control("main_r", "Gain 1"), 1.0);
+        assert_eq!(control("sub_out", "Gain 1"), 1.0);
+
+        s.headphones = true;
+        let (nodes, _, _) = graph(&s, true, true);
+        let gain = nodes.iter().find(|n| n.name == "sub_out").unwrap().controls[0].1;
+        assert_eq!(gain, 0.0);
+    }
+
+    #[test]
+    fn every_link_names_existing_nodes() {
+        let mut s = Settings::default();
+        s.effects.iter_mut().for_each(|e| e.on = true);
+        for lfe in [false, true] {
+            let (nodes, links, outputs) = graph(&s, true, lfe);
+            let exists = |port: &str| nodes.iter().any(|n| n.name == port.split(':').next().unwrap());
+            assert!(links.iter().all(|(a, b)| exists(a) && exists(b)));
+            assert!(outputs.iter().all(|o| exists(o)));
+        }
+        let c = config(&s, true, "x4", true);
+        assert!(c.contains("target.object = \"x4\""));
+        assert!(c.contains("audio.position = [ FL FR LFE ]"));
+    }
+}

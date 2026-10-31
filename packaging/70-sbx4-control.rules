@@ -1,0 +1,3 @@
+# Creative Sound Blaster X4: let the logged-in user open the control port,
+# and keep ModemManager from probing it.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="041e", ATTRS{idProduct}=="3278", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1"
