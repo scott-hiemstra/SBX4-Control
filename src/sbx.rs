@@ -330,7 +330,14 @@ pub struct Sink {
 
 /// The X4's own sink. Blocks briefly on `pw-dump`.
 pub fn x4_sink() -> Option<Sink> {
-    find_sink(|name| name.starts_with(X4_SINK_PREFIX))
+    find_sink(|name| name.starts_with(X4_SINK_PREFIX) && plain_name(name))
+}
+
+/// The sink's name goes into the filter's config file inside quotes; only
+/// accept the characters PipeWire uses for ALSA node names, so a crafted
+/// name can't add settings of its own.
+fn plain_name(name: &str) -> bool {
+    name.chars().all(|c| c.is_ascii_alphanumeric() || "_.:-".contains(c))
 }
 
 /// Wait for the filter's sink to appear; returns its id.
@@ -681,5 +688,12 @@ mod tests {
         let c = config(&s, true, "x4", true);
         assert!(c.contains("target.object = \"x4\""));
         assert!(c.contains("audio.position = [ FL FR LFE ]"));
+    }
+
+    #[test]
+    fn only_plain_sink_names_are_accepted() {
+        assert!(plain_name("alsa_output.usb-Creative_Technology_Ltd_Sound_Blaster_X4_5E8EE3AC95BB9326-03.analog-surround-21"));
+        assert!(!plain_name("x\" }] context.modules = [ { name = evil"));
+        assert!(!plain_name("x4 sink"));
     }
 }

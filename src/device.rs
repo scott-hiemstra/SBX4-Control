@@ -349,11 +349,9 @@ fn decode(frame: &[u8]) -> Vec<Event> {
         CMD_READ_FEATURE if p.len() >= 2 => p[2..]
             .chunks_exact(6)
             .take(p[0] as usize)
-            .map(|c| Event::Feature {
-                family: c[0],
-                id: c[1],
-                value: f32::from_le_bytes([c[2], c[3], c[4], c[5]]),
-            })
+            .map(|c| (c[0], c[1], f32::from_le_bytes([c[2], c[3], c[4], c[5]])))
+            .filter(|&(_, _, value)| value.is_finite())
+            .map(|(family, id, value)| Event::Feature { family, id, value })
             .collect(),
         CMD_OUTPUT if p.len() >= 2 && p[0] == 0x01 => vec![Event::Output(p[1])],
         CMD_FIRMWARE if p.len() >= 2 && p[0] == 0x02 => {
