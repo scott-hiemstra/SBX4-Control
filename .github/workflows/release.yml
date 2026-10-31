@@ -1,5 +1,6 @@
 # Builds the .deb, .rpm and Arch packages. Pushing a tag like v0.4.0 also
-# publishes them as a GitHub Release; running it by hand from the Actions tab
+# publishes them as a GitHub Release (an annotated tag's message becomes the
+# top of its notes); running it by hand from the Actions tab
 # just builds them (downloadable from the run's page).
 name: Release
 
@@ -82,6 +83,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           path: dist
@@ -91,7 +93,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -l dist
+          # An annotated tag's message leads the notes; GitHub's change list follows.
+          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          if [ "$(git cat-file -t "$GITHUB_REF_NAME")" = tag ]; then
+            git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > notes.md
+          else
+            : > notes.md
+          fi
           gh release create "$GITHUB_REF_NAME" dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "sbx4-control ${{ needs.version.outputs.version }}" \
+            --notes-file notes.md \
             --generate-notes

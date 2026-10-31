@@ -89,8 +89,11 @@ Bump `version` in `Cargo.toml` and `pkgver` in `packaging/arch/PKGBUILD`,
 commit, then tag and push:
 
 ```sh
-git tag v0.4.1 && git push origin v0.4.1
+git tag -a v0.4.1 -m "What's new…" && git push origin v0.4.1
 ```
+
+The tag message (`-a -m`, or `-a` to write it in an editor) becomes the top of
+the release notes, followed by GitHub's generated list of changes.
 
 GitHub Actions builds all three packages and publishes the release.
 
