@@ -2,6 +2,19 @@
 
 GTK control panel for the Creative Sound Blaster X4 (USB `041e:3278`) on Linux.
 
+<table>
+  <tr>
+    <td><img src="screenshots/MainScreen.png" alt="Sound Blaster page: output, EQ curve and sliders, spectrum analyzer" width="260"></td>
+    <td><img src="screenshots/Effects.png" alt="Effects page: SBX effects and the subwoofer crossover graph" width="260"></td>
+    <td><img src="screenshots/Mixer.png" alt="Mixer page: output, monitoring and recording levels" width="260"></td>
+  </tr>
+  <tr>
+    <td align="center">Sound Blaster: EQ and analyzer</td>
+    <td align="center">Effects and subwoofer</td>
+    <td align="center">Mixer</td>
+  </tr>
+</table>
+
 - **Sound Blaster** page: speaker/headphone output, the X4's hardware 10-band
   EQ and pre-amp, built-in presets, and your own presets
   (`~/.config/sbx4-control/presets.json`).
