@@ -45,15 +45,33 @@ StatusNotifierItem host: Ubuntu's built-in AppIndicator extension, or
 
 ## Install
 
+Download a package from the
+[latest release](https://github.com/scott-hiemstra/SBX4-Control/releases/latest):
+
+| Distro                       | Package                          | Install                                   |
+|------------------------------|----------------------------------|-------------------------------------------|
+| Ubuntu 22.04+, Debian 12+    | `sbx4-control_*_amd64.deb`       | `sudo apt install ./sbx4-control_*.deb`   |
+| Fedora 43+                   | `sbx4-control-*.x86_64.rpm`      | `sudo dnf install ./sbx4-control-*.rpm`   |
+| Arch Linux                   | `sbx4-control-*.pkg.tar.zst`     | `sudo pacman -U sbx4-control-*.pkg.tar.zst` |
+
+Each package adds a udev rule that gives the logged-in user access to the X4's
+control port. If the X4 was plugged in before installing, unplug and replug it
+once.
+
+To build the packages yourself (needs Docker): `./build-deb.sh` or
+`./build-rpm.sh`; they land in `target/`. For Arch, `packaging/arch/PKGBUILD`
+builds from a release's source with `makepkg`.
+
+### Releasing
+
+Bump `version` in `Cargo.toml` and `pkgver` in `packaging/arch/PKGBUILD`,
+commit, then tag and push:
+
 ```sh
-./build-deb.sh                                   # needs Docker; ~2 min the first time
-sudo apt install ./target/sbx4-control_*_amd64.deb
+git tag v0.4.1 && git push origin v0.4.1
 ```
 
-The package is built on Ubuntu 22.04, so it installs on Ubuntu 22.04+ and
-Debian 12+. It adds a udev rule that gives the logged-in user access to the
-X4's control port. If the X4 was plugged in before installing, unplug and
-replug it once.
+GitHub Actions builds all three packages and publishes the release.
 
 ## Subwoofer (2.1) setup
 

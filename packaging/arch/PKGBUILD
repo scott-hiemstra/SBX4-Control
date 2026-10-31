@@ -1,0 +1,35 @@
+# Maintainer: Scott Hiemstra <61464827+scott-hiemstra@users.noreply.github.com>
+pkgname=sbx4-control
+pkgver=0.4.0
+pkgrel=1
+pkgdesc="Control panel for the Creative Sound Blaster X4"
+arch=('x86_64')
+url="https://github.com/scott-hiemstra/SBX4-Control"
+license=('MIT')
+depends=('gtk4' 'libadwaita' 'alsa-lib' 'glibc' 'gcc-libs')
+makedepends=('cargo')
+optdepends=('pipewire: SBX effects and subwoofer crossover'
+            'wireplumber: SBX effects and subwoofer crossover'
+            'lsp-plugins-lv2: Smart Volume')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "SBX4-Control-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "SBX4-Control-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+  cargo build --frozen --release
+}
+
+package() {
+  cd "SBX4-Control-$pkgver"
+  install -Dm755 target/release/sbx4-control "$pkgdir/usr/bin/sbx4-control"
+  install -Dm644 packaging/io.github.Sbx4Control.desktop "$pkgdir/usr/share/applications/io.github.Sbx4Control.desktop"
+  install -Dm644 packaging/70-sbx4-control.rules "$pkgdir/usr/lib/udev/rules.d/70-sbx4-control.rules"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

@@ -1,0 +1,97 @@
+# Builds the .deb, .rpm and Arch packages. Pushing a tag like v0.4.0 also
+# publishes them as a GitHub Release; running it by hand from the Actions tab
+# just builds them (downloadable from the run's page).
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        name: Check that the tag, Cargo.toml and PKGBUILD agree
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          pkgver=$(sed -n 's/^pkgver=//p' packaging/arch/PKGBUILD)
+          echo "Cargo.toml: $version, PKGBUILD: $pkgver, ref: $GITHUB_REF_NAME"
+          [ "$pkgver" = "$version" ] || { echo "::error::PKGBUILD pkgver ($pkgver) != Cargo.toml ($version)"; exit 1; }
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match Cargo.toml version $version"; exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  deb:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./build-deb.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb
+          path: target/sbx4-control_*_amd64.deb
+
+  rpm:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./build-rpm.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpm
+          path: target/sbx4-control-*.x86_64.rpm
+
+  arch:
+    needs: version
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build with makepkg
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          pacman -Syu --noconfirm --needed base-devel cargo gtk4 libadwaita alsa-lib
+          useradd -m builder
+          # makepkg would download the tag's source tarball; build this checkout instead.
+          mkdir -p /tmp/src /tmp/build
+          cp -r . "/tmp/src/SBX4-Control-$VERSION"
+          tar -C /tmp/src --exclude=.git -czf "/tmp/build/sbx4-control-$VERSION.tar.gz" "SBX4-Control-$VERSION"
+          cp packaging/arch/PKGBUILD /tmp/build/
+          chown -R builder /tmp/build
+          su builder -c 'cd /tmp/build && makepkg --nodeps --noconfirm'
+          mkdir -p dist
+          cp /tmp/build/sbx4-control-"$VERSION"-*-x86_64.pkg.tar.zst dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch
+          path: dist/*.pkg.tar.zst
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [version, deb, rpm, arch]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l dist
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "sbx4-control ${{ needs.version.outputs.version }}" \
+            --generate-notes
