@@ -5,6 +5,6 @@ Comment=Equalizer, output and mixer controls for the Creative Sound Blaster X4
 Exec=sbx4-control
 Icon=audio-card
 Terminal=false
-Categories=AudioVideo;Audio;Settings;HardwareSettings;
+Categories=AudioVideo;Audio;Mixer;
 Keywords=sound;blaster;creative;equalizer;eq;mixer;
 StartupNotify=true

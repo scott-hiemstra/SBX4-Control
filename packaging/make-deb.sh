@@ -10,6 +10,7 @@ rm -rf "$root"
 install -Dm755 "$bin" "$root/usr/bin/sbx4-control"
 install -Dm644 packaging/io.github.Sbx4Control.desktop "$root/usr/share/applications/io.github.Sbx4Control.desktop"
 install -Dm644 packaging/70-sbx4-control.rules "$root/usr/lib/udev/rules.d/70-sbx4-control.rules"
+install -Dm644 packaging/io.github.Sbx4Control.metainfo.xml "$root/usr/share/metainfo/io.github.Sbx4Control.metainfo.xml"
 
 mkdir -p "$root/DEBIAN"
 cat > "$root/DEBIAN/control" <<EOF
@@ -21,10 +22,23 @@ Depends: libc6 (>= 2.35), libgtk-4-1 (>= 4.6), libadwaita-1-0 (>= 1.1), libasoun
 Recommends: pipewire-bin, wireplumber, lsp-plugins-lv2
 Section: sound
 Priority: optional
+Homepage: https://github.com/scott-hiemstra/SBX4-Control
 Description: Control panel for the Creative Sound Blaster X4
- Hardware equalizer, speaker/headphone switching, mixer controls, SBX-style
- effects through PipeWire, and a tray icon for the Sound Blaster X4 USB
- sound card.
+ A control panel for the Creative Sound Blaster X4 USB sound card. It talks
+ to the X4 directly, so its hardware equalizer and output switching work
+ just as they do with Creative's Windows software.
+ .
+ Features:
+  - Speaker and headphone output switching
+  - The X4's 10-band hardware equalizer and pre-amp, with presets
+  - A spectrum analyzer on the X4's own loopback
+  - SBX-style effects: Surround, Dialog+, Bass, Crystalizer, Smart Volume
+  - Subwoofer crossover with level and polarity
+  - Room EQ that tames booming bass by ear, no microphone needed
+  - Mixer controls, a tray icon, and light and dark themes
+ .
+ Effects, subwoofer and room EQ run on PipeWire. Not affiliated with
+ Creative Technology Ltd.
 EOF
 
 cat > "$root/DEBIAN/postinst" <<'EOF'

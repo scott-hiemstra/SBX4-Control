@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metadata: what GNOME Software, KDE Discover and other app stores
+     show for the app (description, screenshots, links, releases). -->
+<component type="desktop-application">
+  <id>io.github.Sbx4Control</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <name>Sound Blaster X4</name>
+  <summary>Equalizer, effects and subwoofer control for the Creative Sound Blaster X4</summary>
+  <developer id="io.github.scott-hiemstra">
+    <name>Scott Hiemstra</name>
+  </developer>
+  <icon type="stock">audio-card</icon>
+
+  <description>
+    <p>
+      A control panel for the Creative Sound Blaster X4 USB sound card on Linux.
+      It talks to the X4 directly, so its hardware equalizer and output switching
+      work just as they do with Creative's Windows software.
+    </p>
+    <ul>
+      <li>Speaker and headphone output switching</li>
+      <li>The X4's 10-band hardware equalizer and pre-amp, with presets and a live EQ curve</li>
+      <li>A spectrum analyzer that listens through the X4's own loopback</li>
+      <li>SBX-style effects: Surround, Dialog+, Bass, Crystalizer and Smart Volume</li>
+      <li>Subwoofer support with an adjustable crossover, level and polarity</li>
+      <li>Room EQ that tames booming bass notes, predicted from your room's size and tuned by ear, with no microphone needed</li>
+      <li>Mixer controls for outputs, monitoring and recording</li>
+      <li>A tray icon, light and dark themes</li>
+    </ul>
+    <p>
+      The effects, subwoofer and room EQ run on PipeWire. This is an independent
+      project, not affiliated with or endorsed by Creative Technology Ltd.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.github.Sbx4Control.desktop</launchable>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>Equalizer, EQ curve and spectrum analyzer</caption>
+      <image>https://raw.githubusercontent.com/scott-hiemstra/SBX4-Control/main/screenshots/MainScreen.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Effects and the subwoofer crossover</caption>
+      <image>https://raw.githubusercontent.com/scott-hiemstra/SBX4-Control/main/screenshots/Effects.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Room EQ with predicted resonances and test tones</caption>
+      <image>https://raw.githubusercontent.com/scott-hiemstra/SBX4-Control/main/screenshots/RoomEQ.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Mixer</caption>
+      <image>https://raw.githubusercontent.com/scott-hiemstra/SBX4-Control/main/screenshots/Mixer.png</image>
+    </screenshot>
+  </screenshots>
+
+  <url type="homepage">https://github.com/scott-hiemstra/SBX4-Control</url>
+  <url type="bugtracker">https://github.com/scott-hiemstra/SBX4-Control/issues</url>
+  <url type="vcs-browser">https://github.com/scott-hiemstra/SBX4-Control</url>
+
+  <categories>
+    <category>AudioVideo</category>
+    <category>Audio</category>
+  </categories>
+  <keywords>
+    <keyword>sound blaster</keyword>
+    <keyword>creative</keyword>
+    <keyword>equalizer</keyword>
+    <keyword>subwoofer</keyword>
+    <keyword>room correction</keyword>
+  </keywords>
+
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <supports>
+    <modalias>usb:v041Ep3278d*</modalias>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.5.2" date="2026-10-31">
+      <description>
+        <p>App store details: description, screenshots and links.</p>
+      </description>
+    </release>
+    <release version="0.5.1" date="2026-10-31">
+      <description>
+        <p>Security hardening from a review; no visible changes.</p>
+      </description>
+    </release>
+    <release version="0.5.0" date="2026-10-30">
+      <description>
+        <p>Room EQ: tame your room's bass by ear, no microphone needed. The mouse wheel no longer changes sliders while scrolling.</p>
+      </description>
+    </release>
+    <release version="0.4.0" date="2026-10-30">
+      <description>
+        <p>Subwoofer crossover, crossover graph, EQ curve, analyzer upgrades and a dark theme.</p>
+      </description>
+    </release>
+  </releases>
+</component>

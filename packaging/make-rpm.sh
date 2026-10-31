@@ -25,14 +25,17 @@ Recommends:     wireplumber
 Recommends:     lsp-plugins-lv2
 
 %description
-Hardware equalizer, speaker/headphone switching, mixer controls, SBX-style
-effects and a subwoofer crossover through PipeWire, and a tray icon for the
-Sound Blaster X4 USB sound card.
+A control panel for the Creative Sound Blaster X4 USB sound card: hardware
+equalizer and output switching, a spectrum analyzer, SBX-style effects, a
+subwoofer crossover, room EQ tuned by ear, mixer controls and a tray icon.
+Effects, subwoofer and room EQ run on PipeWire. Not affiliated with Creative
+Technology Ltd.
 
 %install
 install -Dm755 $PWD/$bin %{buildroot}%{_bindir}/sbx4-control
 install -Dm644 $PWD/packaging/io.github.Sbx4Control.desktop %{buildroot}%{_datadir}/applications/io.github.Sbx4Control.desktop
 install -Dm644 $PWD/packaging/70-sbx4-control.rules %{buildroot}/usr/lib/udev/rules.d/70-sbx4-control.rules
+install -Dm644 $PWD/packaging/io.github.Sbx4Control.metainfo.xml %{buildroot}/usr/share/metainfo/io.github.Sbx4Control.metainfo.xml
 
 %post
 udevadm control --reload-rules >/dev/null 2>&1 || :
@@ -42,6 +45,7 @@ udevadm trigger --subsystem-match=tty --action=change >/dev/null 2>&1 || :
 %{_bindir}/sbx4-control
 %{_datadir}/applications/io.github.Sbx4Control.desktop
 /usr/lib/udev/rules.d/70-sbx4-control.rules
+/usr/share/metainfo/io.github.Sbx4Control.metainfo.xml
 SPEC
 
 rpmbuild --quiet -bb --define "_topdir $top" "$top/SPECS/sbx4-control.spec"
