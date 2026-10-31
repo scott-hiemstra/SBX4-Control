@@ -82,12 +82,100 @@ impl Default for Sub {
     }
 }
 
+/// Speed of sound, ft/s and m/s.
+const SOUND_FT: f64 = 1125.0;
+const SOUND_M: f64 = 343.0;
+pub const CUTS: usize = 3;
+
+/// One room EQ cut: a peaking filter set to pull a resonance down.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Cut {
+    pub on: bool,
+    pub freq: f64,
+    /// dB, 0 or negative.
+    pub gain: f64,
+    pub q: f64,
+}
+
+impl Default for Cut {
+    fn default() -> Self {
+        Self { on: false, freq: 60.0, gain: -6.0, q: 4.0 }
+    }
+}
+
+/// Room EQ: cuts at the room's bass resonances, predicted from its size and
+/// tuned by ear with the test tones.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Room {
+    pub on: bool,
+    /// Length, width, height, in feet or meters.
+    pub size: [f64; 3],
+    pub metric: bool,
+    pub cuts: [Cut; CUTS],
+}
+
+impl Default for Room {
+    fn default() -> Self {
+        Self { on: false, size: [12.0, 10.0, 8.0], metric: false, cuts: [Cut::default(); CUTS] }
+    }
+}
+
+/// A predicted room resonance.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Mode {
+    pub freq: f64,
+    /// How many dimensions resonate here (within 4%); coinciding modes boom most.
+    pub strength: usize,
+}
+
+impl Room {
+    /// Axial modes below `max_hz`, lowest first, with coinciding ones merged.
+    pub fn modes(&self, max_hz: f64) -> Vec<Mode> {
+        let sound = if self.metric { SOUND_M } else { SOUND_FT };
+        let mut freqs: Vec<f64> = self
+            .size
+            .iter()
+            .filter(|&&d| d > 0.0)
+            .flat_map(|&d| (1..).map(move |n| f64::from(n) * sound / (2.0 * d)).take_while(move |&f| f <= max_hz))
+            .collect();
+        freqs.sort_by(f64::total_cmp);
+        let mut modes: Vec<Mode> = Vec::new();
+        for f in freqs {
+            match modes.last_mut() {
+                Some(m) if f / m.freq < 1.04 => {
+                    m.freq = (m.freq * m.strength as f64 + f) / (m.strength as f64 + 1.0);
+                    m.strength += 1;
+                }
+                _ => modes.push(Mode { freq: f, strength: 1 }),
+            }
+        }
+        modes
+    }
+
+    /// Cuts for the strongest modes below 150 Hz (lowest first on ties), off
+    /// for any left over.
+    pub fn suggest_cuts(&self) -> [Cut; CUTS] {
+        let mut modes = self.modes(150.0);
+        modes.sort_by(|a, b| b.strength.cmp(&a.strength).then(a.freq.total_cmp(&b.freq)));
+        let mut picked: Vec<Mode> = modes.into_iter().take(CUTS).collect();
+        picked.sort_by(|a, b| a.freq.total_cmp(&b.freq));
+        std::array::from_fn(|i| match picked.get(i) {
+            Some(m) => Cut { on: true, freq: (m.freq * 2.0).round() / 2.0, gain: if m.strength > 1 { -8.0 } else { -6.0 }, q: 4.0 },
+            None => Cut::default(),
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     pub enabled: bool,
     pub effects: [Effect; 5],
     #[serde(default)]
     pub sub: Sub,
+    #[serde(default)]
+    pub room: Room,
     /// The X4 is on its headphone output; the crossover is bypassed. Not saved.
     #[serde(skip)]
     pub headphones: bool,
@@ -95,7 +183,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { enabled: false, effects: [Effect { on: false, level: 0.5 }; 5], sub: Sub::default(), headphones: false }
+        Self { enabled: false, effects: [Effect { on: false, level: 0.5 }; 5], sub: Sub::default(), room: Room::default(), headphones: false }
     }
 }
 
@@ -108,9 +196,9 @@ impl Settings {
         &mut self.effects[kind as usize]
     }
 
-    /// Whether the filter should run: for the effects, the subwoofer, or both.
+    /// Whether the filter should run: for the effects, the subwoofer or room EQ.
     pub fn wants_filter(&self) -> bool {
-        self.enabled || self.sub.on
+        self.enabled || self.sub.on || self.room.on
     }
 
     /// The effect's level, or 0 when it or SBX is switched off.
@@ -298,6 +386,7 @@ fn node(name: impl Into<String>, plugin: &'static str, controls: &[(&'static str
 /// in_l/in_r → mid/side → Dialog+ (mid peaking) + Surround (high-passed side boost)
 ///   → per channel: Bass (low shelf) → Crystalizer (exciter: HPF → x² → HPF, mixed in,
 ///     plus an air shelf) → headroom trim → Smart Volume (compressor)
+///   → Room EQ (peaking cuts)
 ///   → with `lfe`: Linkwitz-Riley crossover, (L+R)/2 low-passed to the sub
 /// ```
 fn graph(s: &Settings, compressor: bool, lfe: bool) -> (Vec<Node>, Vec<(String, String)>, Vec<String>) {
@@ -395,8 +484,21 @@ fn graph(s: &Settings, compressor: bool, lfe: bool) -> (Vec<Node>, Vec<(String, 
     } else {
         ["trim_l:Out", "trim_r:Out"]
     };
+
+    // Room EQ: the room booms whichever speaker plays the note, so the cuts go
+    // before the crossover. Headphones don't hear the room.
+    let room_active = s.room.on && !s.headphones;
+    let mut stereo = stereo.map(String::from);
+    for (i, cut) in s.room.cuts.iter().enumerate() {
+        let gain = if room_active && cut.on { cut.gain } else { 0.0 };
+        for (ch, input) in ["l", "r"].into_iter().zip(&mut stereo) {
+            let name = format!("room{}_{ch}", i + 1);
+            nodes.push(node(&name, "bq_peaking", &[("Freq", cut.freq), ("Q", cut.q), ("Gain", gain)]));
+            links.push((std::mem::replace(input, format!("{name}:Out")), format!("{name}:In")));
+        }
+    }
     if !lfe {
-        return (nodes, links, stereo.map(String::from).to_vec());
+        return (nodes, links, stereo.to_vec());
     }
 
     // Two cascaded Butterworth sections per side make a 4th-order
@@ -408,7 +510,7 @@ fn graph(s: &Settings, compressor: bool, lfe: bool) -> (Vec<Node>, Vec<(String, 
     let high_pass = if active && sub.high_pass { 1.0 } else { 0.0 };
     let polarity = if sub.invert { -1.0 } else { 1.0 };
     let sub_gain = if active { polarity * db_to_gain(sub.level) } else { 0.0 };
-    for (ch, input) in ["l", "r"].into_iter().zip(stereo) {
+    for (ch, input) in ["l", "r"].into_iter().zip(&stereo) {
         nodes.extend([
             node(format!("xo_hp1_{ch}"), "bq_highpass", &[("Freq", xo), ("Q", 0.707)]),
             node(format!("xo_hp2_{ch}"), "bq_highpass", &[("Freq", xo), ("Q", 0.707)]),
@@ -429,8 +531,8 @@ fn graph(s: &Settings, compressor: bool, lfe: bool) -> (Vec<Node>, Vec<(String, 
         node("sub_out", "mixer", &[("Gain 1", sub_gain)]),
     ]);
     for (from, to) in [
-        (stereo[0], "sub_sum:In 1"),
-        (stereo[1], "sub_sum:In 2"),
+        (stereo[0].as_str(), "sub_sum:In 1"),
+        (stereo[1].as_str(), "sub_sum:In 2"),
         ("sub_sum:Out", "xo_lp1:In"),
         ("xo_lp1:Out", "xo_lp2:In"),
         ("xo_lp2:Out", "sub_out:In 1"),
@@ -513,6 +615,36 @@ mod tests {
         assert_eq!(outputs.len(), 3);
         assert_eq!(control("main_l", "Gain 2"), 1.0);
         assert_eq!(control("sub_out", "Gain 1"), 0.0);
+    }
+
+    #[test]
+    fn room_modes_for_a_small_room() {
+        let room = Room { size: [10.0, 8.0, 8.0], ..Room::default() };
+        let modes = room.modes(150.0);
+        // 56.25 (10 ft), 70.3 (8 ft, twice), 112.5 (10 ft, 2nd), 140.6 (8 ft, 2nd, twice)
+        assert_eq!(modes.len(), 4, "{modes:?}");
+        assert!((modes[0].freq - 56.25).abs() < 0.1 && modes[0].strength == 1);
+        assert!((modes[1].freq - 70.31).abs() < 0.1 && modes[1].strength == 2);
+        let cuts = room.suggest_cuts();
+        assert!(cuts.iter().all(|c| c.on));
+        assert_eq!(cuts.map(|c| c.freq), [56.5, 70.5, 140.5]);
+        assert_eq!(cuts[1].gain, -8.0);
+    }
+
+    #[test]
+    fn room_eq_is_neutral_until_switched_on() {
+        let mut s = Settings::default();
+        s.room.cuts = s.room.suggest_cuts();
+        let gain = |s: &Settings| {
+            let (nodes, _, _) = graph(s, true, true);
+            nodes.iter().find(|n| n.name == "room1_l").unwrap().controls[2].1
+        };
+        assert_eq!(gain(&s), 0.0);
+        s.room.on = true;
+        assert!(s.wants_filter());
+        assert!(gain(&s) < 0.0);
+        s.headphones = true;
+        assert_eq!(gain(&s), 0.0);
     }
 
     #[test]

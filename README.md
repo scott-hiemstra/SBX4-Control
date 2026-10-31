@@ -4,13 +4,15 @@ GTK control panel for the Creative Sound Blaster X4 (USB `041e:3278`) on Linux.
 
 <table>
   <tr>
-    <td><img src="screenshots/MainScreen.png" alt="Sound Blaster page: output, EQ curve and sliders, spectrum analyzer" width="260"></td>
-    <td><img src="screenshots/Effects.png" alt="Effects page: SBX effects and the subwoofer crossover graph" width="260"></td>
-    <td><img src="screenshots/Mixer.png" alt="Mixer page: output, monitoring and recording levels" width="260"></td>
+    <td><img src="screenshots/MainScreen.png" alt="Sound Blaster page: output, EQ curve and sliders, spectrum analyzer" width="200"></td>
+    <td><img src="screenshots/Effects.png" alt="Effects page: SBX effects and the subwoofer crossover graph" width="200"></td>
+    <td><img src="screenshots/RoomEQ.png" alt="Room EQ: predicted resonances, cuts and test tones" width="200"></td>
+    <td><img src="screenshots/Mixer.png" alt="Mixer page: output, monitoring and recording levels" width="200"></td>
   </tr>
   <tr>
     <td align="center">Sound Blaster: EQ and analyzer</td>
     <td align="center">Effects and subwoofer</td>
+    <td align="center">Room EQ</td>
     <td align="center">Mixer</td>
   </tr>
 </table>
@@ -42,6 +44,12 @@ GTK control panel for the Creative Sound Blaster X4 (USB `041e:3278`) on Linux.
   output.
   A graph shows the speaker and sub curves and their sum as you adjust it, and
   the analyzer shades the sub's range.
+- **Room EQ** (Effects page): cuts the bass notes a room makes boom, without
+  a measurement microphone. Enter the room's size, and it predicts the
+  resonances and suggests up to three cuts. A slow bass sweep and steady test
+  tones, played through the same filter as your music, let you find the notes
+  that boom and tune each cut's frequency, depth and width by ear. Cuts only,
+  never boosts; bypassed on the headphone output.
 - **Appearance**: light, dark or follow the system, from the window menu.
 - **Mixer** page: the X4's hardware volumes, input monitoring and recording
   source, through ALSA.

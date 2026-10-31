@@ -9,7 +9,9 @@ use adw::prelude::*;
 use gtk::glib;
 
 use crate::plot::{self, Biquad, LogAxis};
+use crate::room_ui::{self, RoomRows};
 use crate::sbx::{self, Engine, Kind, Settings, Sub};
+use crate::tone::{self, Generator, Signal};
 use crate::{device, tray};
 
 struct EffectRow {
@@ -55,6 +57,8 @@ pub struct SbxPage {
     /// What the graph draws: the sub settings and whether the X4 is on headphones.
     graph_state: Rc<Cell<(Sub, bool)>>,
     crossover_listeners: RefCell<Vec<Box<dyn Fn(Option<f64>)>>>,
+    room: RoomRows,
+    tone: RefCell<Option<Generator>>,
     settings: RefCell<Settings>,
     engine: RefCell<Engine>,
     available: bool,
@@ -153,6 +157,7 @@ impl SbxPage {
             .description("Needs the X4's 2.1 profile. Bypassed on the headphone output.")
             .build();
         sub_group.add(&sub.expander);
+        let (room, room_group) = room_ui::build();
 
         let autostart = gtk::Switch::builder()
             .valign(gtk::Align::Center)
@@ -171,6 +176,7 @@ impl SbxPage {
         prefs.add(&master_group);
         prefs.add(&effects_group);
         prefs.add(&sub_group);
+        prefs.add(&room_group);
         prefs.add(&startup_group);
 
         let missing = adw::StatusPage::builder()
@@ -193,6 +199,8 @@ impl SbxPage {
             graph,
             graph_state,
             crossover_listeners: RefCell::new(Vec::new()),
+            room,
+            tone: RefCell::new(None),
             settings: RefCell::new(sbx::load()),
             engine: RefCell::new(engine),
             available,
@@ -229,6 +237,13 @@ impl SbxPage {
             self.sub.level.set_value(settings.sub.level);
             self.sub.high_pass.set_active(settings.sub.high_pass);
             self.sub.invert.set_active(settings.sub.invert);
+            let room = &settings.room;
+            self.room.expander.set_enable_expansion(room.on);
+            self.room.unit.set_selected(u32::from(room.metric));
+            for (spin, &d) in self.room.size.iter().zip(&room.size) {
+                spin.set_value(d);
+            }
+            self.load_cuts();
         });
         self.update_graph();
     }
@@ -301,11 +316,224 @@ impl SbxPage {
             }
         });
 
+        self.connect_room_signals();
+
         let p = self.clone();
         autostart.connect_active_notify(move |sw| {
             if let Err(e) = tray::set_autostart(sw.is_active()) {
                 p.toasts.add_toast(adw::Toast::new(&format!("Couldn't change the login item: {e}")));
             }
+        });
+    }
+
+    fn connect_room_signals(self: &Rc<Self>) {
+        let p = self.clone();
+        self.room.expander.connect_enable_expansion_notify(move |expander| {
+            if !p.updating.get() {
+                p.settings.borrow_mut().room.on = expander.enables_expansion();
+                p.update_graph();
+                p.save();
+                p.failed.set(false);
+                p.apply();
+            }
+        });
+        for (i, spin) in self.room.size.iter().enumerate() {
+            let p = self.clone();
+            spin.connect_value_changed(move |spin| {
+                if !p.updating.get() {
+                    p.settings.borrow_mut().room.size[i] = spin.value();
+                    p.save();
+                    p.update_graph();
+                }
+            });
+        }
+        let p = self.clone();
+        self.room.unit.connect_selected_notify(move |unit| {
+            if p.updating.get() {
+                return;
+            }
+            // Convert what's there, so switching units keeps the same room.
+            let metric = unit.selected() == 1;
+            let factor = if metric { 0.3048 } else { 1.0 / 0.3048 };
+            let size = {
+                let mut settings = p.settings.borrow_mut();
+                settings.room.metric = metric;
+                settings.room.size = settings.room.size.map(|d| (d * factor * 10.0).round() / 10.0);
+                settings.room.size
+            };
+            p.guarded(|| {
+                for (spin, d) in p.room.size.iter().zip(size) {
+                    spin.set_value(d);
+                }
+            });
+            p.save();
+            p.update_graph();
+        });
+        let p = self.clone();
+        self.room.suggest.connect_clicked(move |_| {
+            {
+                let mut settings = p.settings.borrow_mut();
+                settings.room.cuts = settings.room.suggest_cuts();
+            }
+            p.guarded(|| p.load_cuts());
+            p.schedule_flush();
+            p.update_graph();
+        });
+
+        for (i, cut) in self.room.cuts.iter().enumerate() {
+            let p = self.clone();
+            cut.on.connect_active_notify(move |sw| {
+                if !p.updating.get() {
+                    p.settings.borrow_mut().room.cuts[i].on = sw.is_active();
+                    p.cut_changed(i);
+                }
+            });
+            for (scale, field) in [(&cut.freq, 0), (&cut.gain, 1), (&cut.q, 2)] {
+                let p = self.clone();
+                scale.connect_value_changed(move |scale| {
+                    if p.updating.get() {
+                        return;
+                    }
+                    {
+                        let mut settings = p.settings.borrow_mut();
+                        let c = &mut settings.room.cuts[i];
+                        *[&mut c.freq, &mut c.gain, &mut c.q][field] = scale.value();
+                    }
+                    p.cut_changed(i);
+                });
+            }
+            let p = self.clone();
+            cut.play.connect_toggled(move |button| {
+                if p.updating.get() {
+                    return;
+                }
+                if button.is_active() {
+                    let freq = p.settings.borrow().room.cuts[i].freq;
+                    p.play(Signal::Tone, freq, button);
+                } else {
+                    p.stop_tone();
+                }
+            });
+        }
+
+        let p = self.clone();
+        self.room.sweep.connect_toggled(move |button| {
+            if !p.updating.get() {
+                if button.is_active() {
+                    p.play(Signal::Sweep, tone::SWEEP_FROM, button);
+                } else {
+                    p.stop_tone();
+                }
+            }
+        });
+        let p = self.clone();
+        self.room.tone.connect_toggled(move |button| {
+            if !p.updating.get() {
+                if button.is_active() {
+                    p.play(Signal::Tone, p.room.tone_freq.value(), button);
+                } else {
+                    p.stop_tone();
+                }
+            }
+        });
+        let p = self.clone();
+        self.room.tone_freq.connect_value_changed(move |scale| {
+            p.room.tone_label.set_label(&room_ui::format_hz(scale.value()));
+            if p.room.tone.is_active() {
+                if let Some(generator) = p.tone.borrow().as_ref() {
+                    generator.set_freq(scale.value());
+                }
+            }
+        });
+        self.room.tone_freq.set_value(60.0);
+    }
+
+    /// Put the saved cuts into their rows.
+    fn load_cuts(&self) {
+        let cuts = self.settings.borrow().room.cuts;
+        for (row, cut) in self.room.cuts.iter().zip(cuts) {
+            row.on.set_active(cut.on);
+            row.freq.set_value(cut.freq);
+            row.gain.set_value(cut.gain);
+            row.q.set_value(cut.q);
+        }
+        for i in 0..cuts.len() {
+            self.update_cut_title(i);
+        }
+    }
+
+    fn update_cut_title(&self, i: usize) {
+        let cut = self.settings.borrow().room.cuts[i];
+        let subtitle = if cut.on { format!("{}, {:.1} dB", room_ui::format_hz(cut.freq), cut.gain) } else { "Off".into() };
+        self.room.cuts[i].row.set_subtitle(&subtitle);
+    }
+
+    fn cut_changed(self: &Rc<Self>, i: usize) {
+        self.update_cut_title(i);
+        self.schedule_flush();
+        self.update_graph();
+        if self.room.cuts[i].play.is_active() {
+            if let Some(generator) = self.tone.borrow().as_ref() {
+                generator.set_freq(self.settings.borrow().room.cuts[i].freq);
+            }
+        }
+    }
+
+    /// Play a test tone; `button` stays pressed while it plays, the others are released.
+    fn play(self: &Rc<Self>, signal: Signal, freq: f64, button: &gtk::ToggleButton) {
+        self.stop_tone();
+        self.guarded(|| {
+            for other in self.tone_buttons() {
+                other.set_active(other == *button);
+            }
+        });
+        let target = self.engine.borrow_mut().is_running().then_some(sbx::SINK_NAME);
+        match Generator::start(signal, freq, target) {
+            Ok(generator) => {
+                self.tone.replace(Some(generator));
+                self.watch_tone();
+            }
+            Err(e) => {
+                self.guarded(|| button.set_active(false));
+                self.toasts.add_toast(adw::Toast::new(&format!("Couldn't play a test tone: {e}")));
+            }
+        }
+    }
+
+    fn stop_tone(&self) {
+        if let Some(generator) = self.tone.take() {
+            generator.stop();
+        }
+        self.guarded(|| {
+            for button in self.tone_buttons() {
+                button.set_active(false);
+            }
+        });
+        self.room.tone_label.set_label(&room_ui::format_hz(self.room.tone_freq.value()));
+    }
+
+    fn tone_buttons(&self) -> Vec<gtk::ToggleButton> {
+        let mut buttons = vec![self.room.sweep.clone(), self.room.tone.clone()];
+        buttons.extend(self.room.cuts.iter().map(|c| c.play.clone()));
+        buttons
+    }
+
+    /// Show a sweep's frequency as it plays, and release its button when it ends.
+    fn watch_tone(self: &Rc<Self>) {
+        let p = self.clone();
+        glib::timeout_add_local(Duration::from_millis(100), move || {
+            let (freq, finished, signal) = match p.tone.borrow().as_ref() {
+                Some(g) => (g.freq(), g.finished(), g.signal),
+                None => return glib::ControlFlow::Break,
+            };
+            if finished {
+                p.stop_tone();
+                return glib::ControlFlow::Break;
+            }
+            if signal == Signal::Sweep {
+                p.room.tone_label.set_label(&room_ui::format_hz((freq * 2.0).round() / 2.0));
+            }
+            glib::ControlFlow::Continue
         });
     }
 
@@ -333,6 +561,14 @@ impl SbxPage {
         let settings = self.settings.borrow();
         self.graph_state.set((settings.sub, settings.headphones));
         self.graph.queue_draw();
+        self.room.graph_state.set((settings.room, settings.headphones));
+        self.room.graph.queue_draw();
+        let modes: Vec<String> = settings.room.modes(160.0).iter().map(|m| format!("{:.0}", m.freq)).collect();
+        self.room.modes_row.set_subtitle(&if modes.is_empty() {
+            "Enter the room's size".to_owned()
+        } else {
+            format!("Predicted at {} Hz", modes.join(", "))
+        });
         let crossover = (settings.sub.on && !settings.headphones).then_some(settings.sub.crossover);
         for listener in self.crossover_listeners.borrow().iter() {
             listener(crossover);
@@ -351,7 +587,7 @@ impl SbxPage {
         if self.settings.borrow().enabled {
             "On: audio plays through “Sound Blaster X4 (SBX)”".into()
         } else {
-            "Off (the filter keeps running for the subwoofer)".into()
+            "Off (the filter keeps running for the subwoofer and room EQ)".into()
         }
     }
 
@@ -500,6 +736,7 @@ impl SbxPage {
 
     /// Stop the filter and hand the default output back to the X4.
     pub fn shutdown(&self) {
+        self.stop_tone();
         if self.engine.borrow_mut().is_running() {
             self.stop(true);
         }

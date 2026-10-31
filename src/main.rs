@@ -3,9 +3,11 @@ mod eq_page;
 mod mixer_page;
 mod plot;
 mod presets;
+mod room_ui;
 mod sbx;
 mod sbx_page;
 mod spectrum;
+mod tone;
 mod tray;
 mod ui;
 
@@ -83,6 +85,7 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
         .default_height(720)
         .content(&content)
         .build();
+    window.add_controller(wheel_scrolls_pages());
     eq.connect(false);
     let s = sbx.clone();
     eq.connect_headphones(move |on| s.set_headphones(on));
@@ -114,6 +117,36 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
         Err(e) => eprintln!("sbx4-control: no tray icon ({e}); closing the window quits"),
     }
     window
+}
+
+/// The mouse wheel scrolls the page even with the pointer over a slider or
+/// number field. GTK would otherwise change the value under the pointer, so
+/// scrolling down a page quietly drags whatever it passes over. Values still
+/// change by dragging, clicking or the keyboard.
+fn wheel_scrolls_pages() -> gtk::EventControllerScroll {
+    let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+    scroll.set_propagation_phase(gtk::PropagationPhase::Capture);
+    scroll.connect_scroll(|controller, _, dy| {
+        let target = (|| {
+            let window = controller.widget()?;
+            let (x, y) = controller.current_event()?.position()?;
+            let (dx, dy) = window.native()?.surface_transform();
+            window.pick(x - dx, y - dy, gtk::PickFlags::DEFAULT)
+        })();
+        let Some(target) = target else { return glib::Propagation::Proceed };
+        let over_value = std::iter::successors(Some(target.clone()), |w| w.parent())
+            .take_while(|w| !w.is::<gtk::ScrolledWindow>())
+            .any(|w| w.is::<gtk::Range>() || w.is::<gtk::SpinButton>());
+        if !over_value {
+            return glib::Propagation::Proceed;
+        }
+        if let Some(page) = target.ancestor(gtk::ScrolledWindow::static_type()).and_downcast::<gtk::ScrolledWindow>() {
+            let adj = page.vadjustment();
+            adj.set_value(adj.value() + dy * 50.0);
+        }
+        glib::Propagation::Stop
+    });
+    scroll
 }
 
 /// The "app.theme" action (system / light / dark), remembered in ui.json.

@@ -1,6 +1,6 @@
 # Maintainer: Scott Hiemstra <61464827+scott-hiemstra@users.noreply.github.com>
 pkgname=sbx4-control
-pkgver=0.4.0
+pkgver=0.5.0
 pkgrel=1
 pkgdesc="Control panel for the Creative Sound Blaster X4"
 arch=('x86_64')
