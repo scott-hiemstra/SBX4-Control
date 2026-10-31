@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sbx4-control APT repository</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 46rem; margin: 2rem auto; padding: 0 1rem; color: #222; background: #fff; }
+  pre { background: #f3f3f3; padding: 0.8rem 1rem; overflow-x: auto; border-radius: 6px; }
+  code { font-family: ui-monospace, monospace; }
+  @media (prefers-color-scheme: dark) { body { color: #ddd; background: #1e1e1e; } pre { background: #2a2a2a; } a { color: #8ab4f8; } }
+</style>
+</head>
+<body>
+<h1>sbx4-control APT repository</h1>
+<p>Packages of <a href="https://github.com/scott-hiemstra/SBX4-Control">sbx4-control</a>, a control panel for the
+Creative Sound Blaster X4, for Ubuntu 22.04+ and Debian 12+ (amd64).</p>
+<h2>Set up once</h2>
+<pre><code>sudo install -d /etc/apt/keyrings
+sudo curl -fsSLo /etc/apt/keyrings/sbx4-control.asc https://scott-hiemstra.github.io/SBX4-Control/sbx4-control.asc
+sudo curl -fsSLo /etc/apt/sources.list.d/sbx4-control.sources https://scott-hiemstra.github.io/SBX4-Control/sbx4-control.sources
+sudo apt update
+sudo apt install sbx4-control</code></pre>
+<p>After that, sbx4-control also appears in GNOME Software and Discover, and updates arrive with your normal system updates.</p>
+</body>
+</html>

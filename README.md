@@ -66,7 +66,22 @@ StatusNotifierItem host: Ubuntu's built-in AppIndicator extension, or
 
 ## Install
 
-Download a package from the
+### Debian and Ubuntu: APT repository (recommended)
+
+Set it up once; after that sbx4-control installs and updates like any other
+package, and shows up in GNOME Software and Discover:
+
+```sh
+sudo install -d /etc/apt/keyrings
+sudo curl -fsSLo /etc/apt/keyrings/sbx4-control.asc https://scott-hiemstra.github.io/SBX4-Control/sbx4-control.asc
+sudo curl -fsSLo /etc/apt/sources.list.d/sbx4-control.sources https://scott-hiemstra.github.io/SBX4-Control/sbx4-control.sources
+sudo apt update
+sudo apt install sbx4-control
+```
+
+### Packages
+
+Or download a package from the
 [latest release](https://github.com/scott-hiemstra/SBX4-Control/releases/latest):
 
 | Distro                       | Package                          | Install                                   |
@@ -95,7 +110,16 @@ git tag -a v0.4.1 -m "What's new…" && git push origin v0.4.1
 The tag message (`-a -m`, or `-a` to write it in an editor) becomes the top of
 the release notes, followed by GitHub's generated list of changes.
 
-GitHub Actions builds all three packages and publishes the release.
+GitHub Actions builds all three packages and publishes the release, then
+rebuilds the APT repository on GitHub Pages from every released .deb.
+
+### APT repository
+
+`.github/workflows/apt-repo.yml` builds the repository with
+`packaging/apt/build-repo.sh` and signs it with the `APT_SIGNING_KEY`
+repository secret: an ASCII-armored private key without a passphrase. GitHub
+Pages must be set to deploy from GitHub Actions (Settings → Pages → Source).
+The repository can also be rebuilt by hand from the Actions tab.
 
 ## Subwoofer (2.1) setup
 
