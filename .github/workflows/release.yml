@@ -14,7 +14,7 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: v
         name: Check that the tag, Cargo.toml and PKGBUILD agree
         run: |
@@ -31,9 +31,9 @@ jobs:
     needs: version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: ./build-deb.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: deb
           path: target/sbx4-control_*_amd64.deb
@@ -42,9 +42,9 @@ jobs:
     needs: version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: ./build-rpm.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: rpm
           path: target/sbx4-control-*.x86_64.rpm
@@ -54,7 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     container: archlinux:latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build with makepkg
         env:
           VERSION: ${{ needs.version.outputs.version }}
@@ -70,7 +70,7 @@ jobs:
           su builder -c 'cd /tmp/build && makepkg --nodeps --noconfirm'
           mkdir -p dist
           cp /tmp/build/sbx4-control-"$VERSION"-*-x86_64.pkg.tar.zst dist/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: arch
           path: dist/*.pkg.tar.zst
@@ -82,7 +82,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
