@@ -134,6 +134,23 @@ crate). The commands are the G6 set documented in
 | Set output      | `5a 2c 05 00 <code> 00 00 00`            |
 | Firmware        | `5a 09 01 02`                            |
 
+## Credits
+
+Thanks to **Creative Technology** for the Sound Blaster X4: a great-sounding
+little box with a real hardware EQ, proper 7.1 outputs and a solid build.
+This app exists so it can be enjoyed just as much on Linux.
+
+Thanks also to the community work this builds on:
+
+- [Katana V2X reverse engineering](https://blog.nns.ee/2026/02/20/katana-v2x-re)
+  and the `v2x` crate, for the control-port unlock.
+- [linuxblaster_control](https://github.com/RizeCrime/linuxblaster_control),
+  for documenting the command set.
+
 ## License
 
-MIT; see [LICENSE](LICENSE). Not affiliated with Creative Technology.
+MIT; see [LICENSE](LICENSE).
+
+This is an independent project, not affiliated with or endorsed by Creative
+Technology Ltd. Creative and Sound Blaster are trademarks of Creative
+Technology Ltd.
