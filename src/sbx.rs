@@ -6,6 +6,7 @@
 //! the LSP stereo compressor for Smart Volume when lsp-plugins-lv2 is installed
 //! and PipeWire was built with LV2 support (Ubuntu's 1.0 build isn't).
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::fs;
 use std::io;
@@ -252,11 +253,13 @@ pub struct Engine {
     compressor: bool,
     /// The X4 sink the filter feeds has an LFE channel.
     lfe: bool,
+    /// Control values the filter has now, so updates only send changes.
+    sent: HashMap<String, f64>,
 }
 
 impl Engine {
     pub fn new() -> Self {
-        Self { child: None, node_id: None, compressor: compressor_available(), lfe: false }
+        Self { child: None, node_id: None, compressor: compressor_available(), lfe: false, sent: HashMap::new() }
     }
 
     pub fn has_compressor(&self) -> bool {
@@ -290,6 +293,8 @@ impl Engine {
         let path = config_dir().join("sbx-filter.conf");
         fs::create_dir_all(config_dir())?;
         fs::write(&path, config(settings, self.compressor, &x4_sink.name, self.lfe))?;
+        // The config file starts the filter with these values.
+        self.sent = controls(settings, self.compressor, self.lfe).into_iter().collect();
 
         let log = log_path();
         if let Some(dir) = log.parent() {
@@ -314,15 +319,22 @@ impl Engine {
         self.node_id = Some(id);
     }
 
-    /// Push all control values to the running filter.
-    pub fn update(&self, settings: &Settings) {
+    /// Push the control values that changed to the running filter.
+    pub fn update(&mut self, settings: &Settings) {
         let Some(id) = self.node_id else { return };
-        let mut cmd = Command::new("pw-cli");
-        cmd.args(["set-param", &id.to_string(), "Props", &params(settings, self.compressor, self.lfe)])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        if let Ok(mut child) = cmd.spawn() {
-            thread::spawn(move || child.wait());
+        let changed: Vec<(String, f64)> = controls(settings, self.compressor, self.lfe)
+            .into_iter()
+            .filter(|(key, value)| self.sent.get(key) != Some(value))
+            .collect();
+        for chunk in changed.chunks(PARAMS_PER_CALL) {
+            let mut cmd = Command::new("pw-cli");
+            cmd.args(["set-param", &id.to_string(), "Props", &params(chunk)])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            if let Ok(mut child) = cmd.spawn() {
+                thread::spawn(move || child.wait());
+                self.sent.extend(chunk.iter().cloned());
+            }
         }
     }
 
@@ -653,14 +665,25 @@ fn config(s: &Settings, compressor: bool, x4_sink: &str, lfe: bool) -> String {
     c
 }
 
-/// All controls as a `pw-cli set-param … Props` argument.
-fn params(s: &Settings, compressor: bool, lfe: bool) -> String {
+/// How many controls go in one `pw-cli set-param`. pw-cli builds the Props
+/// object in a 1 KiB buffer and silently sends an empty one when it overflows,
+/// which happens past about 24 controls.
+const PARAMS_PER_CALL: usize = 12;
+
+/// Every control in the graph as (`node:control`, value).
+fn controls(s: &Settings, compressor: bool, lfe: bool) -> Vec<(String, f64)> {
     let (nodes, _, _) = graph(s, compressor, lfe);
+    nodes
+        .iter()
+        .flat_map(|n| n.controls.iter().map(move |(k, v)| (format!("{}:{k}", n.name), *v)))
+        .collect()
+}
+
+/// `controls` as a `pw-cli set-param … Props` argument.
+fn params(controls: &[(String, f64)]) -> String {
     let mut p = String::from("{ params = [");
-    for n in &nodes {
-        for (k, v) in &n.controls {
-            let _ = write!(p, " \"{}:{k}\" {v:.6}", n.name);
-        }
+    for (key, value) in controls {
+        let _ = write!(p, " \"{key}\" {value:.6}");
     }
     p.push_str(" ] }");
     p

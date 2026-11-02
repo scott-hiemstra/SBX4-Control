@@ -550,7 +550,7 @@ impl SbxPage {
             self.stop(true);
             self.set_status("Off");
         } else if self.engine.borrow_mut().is_running() {
-            self.engine.borrow().update(&self.settings.borrow());
+            self.engine.borrow_mut().update(&self.settings.borrow());
             self.set_status(&self.running_status());
         } else {
             self.try_start();
@@ -659,7 +659,7 @@ impl SbxPage {
                 Ok(id) => {
                     p.engine.borrow_mut().set_node(id);
                     // Catch up on changes made while starting.
-                    p.engine.borrow().update(&p.settings.borrow());
+                    p.engine.borrow_mut().update(&p.settings.borrow());
                     p.set_status(&p.running_status());
                     if p.settings.borrow().sub.on && !lfe {
                         p.toasts.add_toast(adw::Toast::new(
@@ -730,7 +730,7 @@ impl SbxPage {
         let p = self.clone();
         glib::timeout_add_local_once(Duration::from_millis(60), move || {
             p.flush_pending.set(false);
-            p.engine.borrow().update(&p.settings.borrow());
+            p.engine.borrow_mut().update(&p.settings.borrow());
             p.save();
         });
     }
