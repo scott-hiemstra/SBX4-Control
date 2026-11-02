@@ -18,7 +18,7 @@ struct EffectRow {
     kind: Kind,
     expander: adw::ExpanderRow,
     level: gtk::Scale,
-    usable: bool,
+    usable: Cell<bool>,
 }
 
 struct SubRows {
@@ -110,7 +110,7 @@ impl SbxPage {
                 level_row.add_suffix(&level);
                 expander.add_row(&level_row);
                 effects_group.add(&expander);
-                EffectRow { kind, expander, level, usable }
+                EffectRow { kind, expander, level, usable: Cell::new(usable) }
             })
             .collect();
 
@@ -229,7 +229,7 @@ impl SbxPage {
             self.master.set_active(settings.enabled);
             for row in &self.effects {
                 let effect = settings.effect(row.kind);
-                row.expander.set_enable_expansion(effect.on && row.usable);
+                row.expander.set_enable_expansion(effect.on && row.usable.get());
                 row.level.set_value(effect.level * 100.0);
             }
             self.sub.expander.set_enable_expansion(settings.sub.on);
@@ -630,28 +630,33 @@ impl SbxPage {
         self.set_status("Starting…");
         let settings = self.settings.borrow().clone();
         let lfe = x4_sink.lfe;
-        if let Err(e) = self.engine.borrow_mut().spawn(&settings, &x4_sink) {
-            self.starting.set(false);
-            self.fail(&format!("Couldn't start PipeWire's filter: {e}"));
-            return;
-        }
+        let spawned = self.engine.borrow_mut().spawn(&settings, &x4_sink);
+        let pid = match spawned.map(|()| self.engine.borrow().pid()) {
+            Ok(Some(pid)) => pid,
+            Ok(None) => unreachable!("spawn succeeded without a child"),
+            Err(e) => {
+                self.starting.set(false);
+                self.fail(&format!("Couldn't start PipeWire's filter: {e}"));
+                return;
+            }
+        };
 
         let (tx, rx) = async_channel::bounded(1);
         std::thread::spawn(move || {
-            let id = sbx::wait_for_sink(Duration::from_secs(5));
-            if let Some(id) = id {
+            let result = sbx::wait_for_sink(pid, Duration::from_secs(5));
+            if let Ok(id) = result {
                 sbx::set_default_sink(id);
             }
-            let _ = tx.send_blocking(id);
+            let _ = tx.send_blocking(result);
         });
         let p = self.clone();
         glib::spawn_future_local(async move {
-            let id = rx.recv().await.ok().flatten();
+            let result = rx.recv().await.unwrap_or(Err(sbx::StartError::TimedOut));
             p.starting.set(false);
-            match id {
+            match result {
                 // Switched off while starting.
-                Some(_) if !p.settings.borrow().wants_filter() => p.stop(true),
-                Some(id) => {
+                Ok(_) if !p.settings.borrow().wants_filter() => p.stop(true),
+                Ok(id) => {
                     p.engine.borrow_mut().set_node(id);
                     // Catch up on changes made while starting.
                     p.engine.borrow().update(&p.settings.borrow());
@@ -662,12 +667,40 @@ impl SbxPage {
                         ));
                     }
                 }
-                None => {
+                // lsp-plugins-lv2 is installed but this PipeWire can't load
+                // LV2 plugins (Ubuntu 24.04): run everything else without
+                // Smart Volume rather than nothing at all.
+                Err(e) if e.is_lv2() && p.engine.borrow().has_compressor() => {
+                    p.engine.borrow_mut().disable_compressor();
+                    p.disable_smart_volume();
+                    p.toasts.add_toast(adw::Toast::new(
+                        "Smart Volume is off: this PipeWire can't load LV2 plugins",
+                    ));
+                    p.try_start();
+                }
+                Err(sbx::StartError::Exited(errors)) => {
+                    p.engine.borrow_mut().stop();
+                    let reason = errors.lines().next().unwrap_or("no error was logged");
+                    p.fail(&format!(
+                        "PipeWire's filter quit: {reason} (log: {})",
+                        sbx::log_path().display()
+                    ));
+                }
+                Err(sbx::StartError::TimedOut) => {
                     p.engine.borrow_mut().stop();
                     p.fail("PipeWire didn't create the effects output.");
                 }
             }
         });
+    }
+
+    fn disable_smart_volume(&self) {
+        for row in self.effects.iter().filter(|row| row.kind == Kind::SmartVolume) {
+            row.usable.set(false);
+            self.guarded(|| row.expander.set_enable_expansion(false));
+            row.expander.set_sensitive(false);
+            row.expander.set_subtitle("This PipeWire build can't load LV2 plugins");
+        }
     }
 
     fn stop(&self, restore_default: bool) {
@@ -720,7 +753,7 @@ impl SbxPage {
         state.effects = self
             .effects
             .iter()
-            .map(|row| (row.kind.title().to_owned(), row.expander.enables_expansion(), row.usable))
+            .map(|row| (row.kind.title().to_owned(), row.expander.enables_expansion(), row.usable.get()))
             .collect();
     }
 
@@ -729,7 +762,7 @@ impl SbxPage {
     }
 
     pub fn set_effect_from_tray(&self, index: usize, on: bool) {
-        if let Some(row) = self.effects.get(index).filter(|row| row.usable) {
+        if let Some(row) = self.effects.get(index).filter(|row| row.usable.get()) {
             row.expander.set_enable_expansion(on);
         }
     }

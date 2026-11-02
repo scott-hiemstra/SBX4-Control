@@ -3,7 +3,8 @@
 //! the PC, not on the X4, so this is the Linux counterpart rather than a port.
 //!
 //! The graph only uses plugins that exist in PipeWire 1.0 (Ubuntu 24.04), plus
-//! the LSP stereo compressor for Smart Volume when lsp-plugins-lv2 is installed.
+//! the LSP stereo compressor for Smart Volume when lsp-plugins-lv2 is installed
+//! and PipeWire was built with LV2 support (Ubuntu's 1.0 build isn't).
 
 use std::fmt::Write as _;
 use std::fs;
@@ -233,7 +234,8 @@ pub fn tools_available() -> bool {
     ["pipewire", "pw-cli", "pw-dump", "wpctl"].iter().all(|tool| glib::find_program_in_path(tool).is_some())
 }
 
-/// Whether the LSP compressor used for Smart Volume is installed.
+/// Whether the LSP compressor used for Smart Volume is installed. PipeWire
+/// may still be unable to load it; [`Engine::disable_compressor`] covers that.
 pub fn compressor_available() -> bool {
     let mut dirs: Vec<PathBuf> = std::env::var("LV2_PATH")
         .map(|p| p.split(':').map(PathBuf::from).collect())
@@ -261,6 +263,17 @@ impl Engine {
         self.compressor
     }
 
+    /// Build the graph without the LV2 compressor from now on, for a PipeWire
+    /// that can't load LV2 plugins.
+    pub fn disable_compressor(&mut self) {
+        self.compressor = false;
+    }
+
+    /// Process id of the filter, if one was started.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.as_ref().map(Child::id)
+    }
+
     pub fn is_running(&mut self) -> bool {
         match &mut self.child {
             Some(child) => matches!(child.try_wait(), Ok(None)),
@@ -269,7 +282,8 @@ impl Engine {
     }
 
     /// Start the filter process feeding `x4_sink`. Its sink appears shortly
-    /// after; wait for it with [`wait_for_sink`] off the main thread.
+    /// after; wait for it with [`wait_for_sink`] off the main thread. Its
+    /// errors go to [`log_path`].
     pub fn spawn(&mut self, settings: &Settings, x4_sink: &Sink) -> io::Result<()> {
         self.stop();
         self.lfe = x4_sink.lfe;
@@ -277,8 +291,14 @@ impl Engine {
         fs::create_dir_all(config_dir())?;
         fs::write(&path, config(settings, self.compressor, &x4_sink.name, self.lfe))?;
 
+        let log = log_path();
+        if let Some(dir) = log.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        let log = fs::File::create(log)?;
+
         let mut cmd = Command::new("pipewire");
-        cmd.arg("-c").arg(&path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        cmd.arg("-c").arg(&path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(log);
         // Take the filter down with us if the app dies. Must be spawned from the
         // main thread: the signal fires when the spawning *thread* exits.
         unsafe {
@@ -340,16 +360,59 @@ fn plain_name(name: &str) -> bool {
     name.chars().all(|c| c.is_ascii_alphanumeric() || "_.:-".contains(c))
 }
 
-/// Wait for the filter's sink to appear; returns its id.
-pub fn wait_for_sink(timeout: Duration) -> Option<u32> {
+/// Where the running filter writes its errors.
+pub fn log_path() -> PathBuf {
+    glib::user_cache_dir().join("sbx4-control").join("filter.log")
+}
+
+/// Why the filter's sink didn't appear.
+pub enum StartError {
+    /// The filter process quit, with the errors it logged.
+    Exited(String),
+    TimedOut,
+}
+
+impl StartError {
+    /// The filter quit because PipeWire couldn't load an LV2 plugin.
+    pub fn is_lv2(&self) -> bool {
+        matches!(self, Self::Exited(errors) if errors.contains("lv2"))
+    }
+}
+
+/// Wait for the sink of the filter running as `pid` to appear; returns its id.
+/// Gives up early if the filter quits.
+pub fn wait_for_sink(pid: u32, timeout: Duration) -> Result<u32, StartError> {
     let start = Instant::now();
     while start.elapsed() < timeout {
         if let Some(sink) = find_sink(|name| name == SINK_NAME) {
-            return Some(sink.id);
+            return Ok(sink.id);
+        }
+        if has_exited(pid) {
+            return Err(StartError::Exited(logged_errors()));
         }
         thread::sleep(Duration::from_millis(100));
     }
-    None
+    Err(StartError::TimedOut)
+}
+
+/// Whether the child `pid` has quit, without reaping it: the main thread's
+/// [`Engine`] still owns it and collects it with `wait`.
+fn has_exited(pid: u32) -> bool {
+    use nix::sys::wait::{waitid, Id, WaitPidFlag, WaitStatus};
+    let flags = WaitPidFlag::WEXITED | WaitPidFlag::WNOHANG | WaitPidFlag::WNOWAIT;
+    !matches!(waitid(Id::Pid(nix::unistd::Pid::from_raw(pid as i32)), flags), Ok(WaitStatus::StillAlive))
+}
+
+/// The error lines from the filter's log, without PipeWire's prefixes, e.g.
+/// `can't load plugin type 'lv2': No such file or directory`.
+fn logged_errors() -> String {
+    let log = fs::read_to_string(log_path()).unwrap_or_default();
+    let errors: Vec<&str> = log
+        .lines()
+        .filter(|line| line.starts_with("[E]"))
+        .map(|line| line.rsplit_once("] ").map_or(line, |(_, msg)| msg).trim())
+        .collect();
+    errors.join("\n")
 }
 
 pub fn set_default_sink(id: u32) {
