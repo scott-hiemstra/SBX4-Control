@@ -127,11 +127,30 @@ Out of the box PipeWire gives the X4 a stereo output. For a subwoofer on the
 X4's Center/Sub jack, install the 2.1 profile from `contrib/`:
 
 ```sh
-mkdir -p ~/.config/alsa-card-profile/mixer/profile-sets ~/.config/wireplumber/wireplumber.conf.d
+mkdir -p ~/.config/alsa-card-profile/mixer/profile-sets
 cp contrib/alsa-card-profile/sound-blaster-x4.conf ~/.config/alsa-card-profile/mixer/profile-sets/
+```
+
+Then the WirePlumber rule that selects it. Which file depends on the
+WirePlumber version (`wireplumber --version`). 0.5 and later (Ubuntu 24.10+,
+Debian 13, Fedora, Arch):
+
+```sh
+mkdir -p ~/.config/wireplumber/wireplumber.conf.d
 cp contrib/wireplumber/51-sound-blaster-x4.conf ~/.config/wireplumber/wireplumber.conf.d/
 systemctl --user restart wireplumber
 ```
+
+0.4 (Ubuntu 24.04, Debian 12), which ignores `wireplumber.conf.d`:
+
+```sh
+mkdir -p ~/.config/wireplumber/main.lua.d
+cp contrib/wireplumber/51-sound-blaster-x4.lua ~/.config/wireplumber/main.lua.d/
+systemctl --user restart wireplumber
+```
+
+`pactl list cards | grep "Active Profile"` should then show
+`sound-blaster-x4-21` for the X4.
 
 Then restart sbx4-control and switch on Effects → Subwoofer.
 
