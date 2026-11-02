@@ -84,6 +84,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.5.3" date="2026-11-01">
+      <description>
+        <p>Subwoofer and effect controls now apply while audio plays. Effects keep working when PipeWire can't load LV2 plugins, and 2.1 setup for WirePlumber 0.4.</p>
+      </description>
+    </release>
     <release version="0.5.2" date="2026-10-31">
       <description>
         <p>App store details: description, screenshots and links.</p>
