@@ -1197,7 +1197,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "sbx4-control"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "aes-gcm",
  "alsa",
