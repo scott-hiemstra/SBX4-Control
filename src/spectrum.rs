@@ -1,39 +1,18 @@
-//! Live spectrum of what the X4 is playing, captured from its hardware
-//! "What U Hear" loopback.
-//!
-//! Reading the loopback straight from ALSA keeps this out of PipeWire, so GNOME
-//! doesn't show it as an app using the microphone. While it runs, the X4's
-//! recording source is switched to What U Hear; it's restored on stop.
+//! Live spectrum of what's playing, drawn as bars, a spectrogram or a ring.
+//! Audio and analysis come from [`crate::analysis`]: in the control panel,
+//! the X4's "What U Hear" loopback only.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
 
 use adw::prelude::*;
-use alsa::mixer::{Mixer, SelemChannelId, SelemId};
-use alsa::pcm::{Access, Format, HwParams, PCM};
-use alsa::{Direction, ValueOr};
 use gtk::{cairo, glib};
-use rustfft::num_complex::Complex;
-use rustfft::FftPlanner;
 
+use crate::analysis::{band_center, Capture, Frame, Sources, BANDS, DB_FLOOR, F_MAX, F_MIN, FRAME_SECONDS};
 use crate::plot::{self, LogAxis};
 use crate::ui;
 
-const PCM_DEVICE: &str = "hw:CARD=X4,DEV=0";
-const MIXER_DEVICE: &str = "hw:X4";
-const CHANNEL: SelemChannelId = SelemChannelId::FrontLeft;
-const RATE: u32 = 48_000;
-const FFT_SIZE: usize = 4096;
-/// New spectrum every 512 samples: ~94 per second.
-const HOP: usize = 512;
-const BANDS: usize = 48;
-const F_MIN: f64 = 25.0;
-const F_MAX: f64 = 20_000.0;
-const DB_FLOOR: f32 = -80.0;
 /// Same labels as the EQ sliders.
 const LABELS: [(&str, f64); 10] = [
     ("31", 31.25),
@@ -50,8 +29,8 @@ const LABELS: [(&str, f64); 10] = [
 
 /// Seconds of history the spectrogram shows.
 const HISTORY_SECONDS: f64 = 2.5;
-/// One spectrogram row per FFT frame.
-const HISTORY: usize = (HISTORY_SECONDS * RATE as f64 / HOP as f64) as usize;
+/// One spectrogram row per frame.
+const HISTORY: usize = (HISTORY_SECONDS / FRAME_SECONDS) as usize;
 /// Content height for the spectrogram and ring; the bars use 150.
 const TALL: i32 = 240;
 
@@ -74,7 +53,7 @@ impl Style {
         }
     }
 
-    fn key(self) -> &'static str {
+    pub fn key(self) -> &'static str {
         match self {
             Style::Bars => "bars",
             Style::Spectrogram => "spectrogram",
@@ -83,39 +62,37 @@ impl Style {
     }
 }
 
-struct Shared {
-    /// Latest band levels in dBFS, of the two channels mixed.
-    bands: Vec<f32>,
-    /// The same for each channel, for the ring.
-    left: Vec<f32>,
-    right: Vec<f32>,
-    /// Counts new spectra, so the spectrogram adds each one once.
-    seq: u64,
-    error: Option<String>,
-}
-
-struct Capture {
-    stop: Arc<AtomicBool>,
-    thread: JoinHandle<()>,
-}
-
 pub struct Analyzer {
     pub widget: gtk::DrawingArea,
-    shared: Arc<Mutex<Shared>>,
-    capture: RefCell<Option<Capture>>,
+    sources: Sources,
+    /// Sized for the control panel's page; otherwise fills its space.
+    compact: bool,
+    capture: Rc<RefCell<Option<Capture>>>,
     view: Rc<RefCell<View>>,
+    frozen: Rc<Cell<bool>>,
 }
 
 impl Analyzer {
-    /// Captures only while the widget is on screen.
+    /// The control panel's analyzer: the X4 only, in the style chosen there.
     pub fn new() -> Rc<Self> {
-        let widget = gtk::DrawingArea::builder().content_height(150).hexpand(true).build();
-        let shared = Arc::new(Mutex::new(Shared { bands: vec![DB_FLOOR; BANDS], left: vec![DB_FLOOR; BANDS], right: vec![DB_FLOOR; BANDS], seq: 0, error: None }));
-        let view = Rc::new(RefCell::new(View::new()));
+        Self::with(Sources::X4Only, true, style())
+    }
 
-        let (v, s) = (view.clone(), shared.clone());
+    /// Captures only while the widget is on screen.
+    pub fn with(sources: Sources, compact: bool, style: Style) -> Rc<Self> {
+        let widget = gtk::DrawingArea::builder().hexpand(true).build();
+        if compact {
+            widget.set_content_height(150);
+        } else {
+            widget.set_vexpand(true);
+        }
+        let capture: Rc<RefCell<Option<Capture>>> = Rc::default();
+        let view = Rc::new(RefCell::new(View::new()));
+        let frozen = Rc::new(Cell::new(false));
+
+        let (v, c) = (view.clone(), capture.clone());
         widget.set_draw_func(move |_, cr, w, h| {
-            let error = s.lock().unwrap().error.clone();
+            let error = c.borrow().as_ref().and_then(Capture::error);
             let (view, w, h) = (v.borrow(), f64::from(w), f64::from(h));
             match view.style {
                 Style::Bars => draw(cr, w, h, &view, error.as_deref()),
@@ -123,19 +100,22 @@ impl Analyzer {
                 Style::Ring => draw_ring(cr, w, h, &view, error.as_deref()),
             }
         });
-        let (v, s) = (view.clone(), shared.clone());
+        let (v, c, f) = (view.clone(), capture.clone(), frozen.clone());
         widget.add_tick_callback(move |area, clock| {
-            let (bands, left, right, seq) = {
-                let s = s.lock().unwrap();
-                (s.bands.clone(), s.left.clone(), s.right.clone(), s.seq)
-            };
-            v.borrow_mut().advance(&bands, &left, &right, seq, clock.frame_time());
-            area.queue_draw();
+            let frames = c.borrow().as_ref().map(Capture::drain).unwrap_or_default();
+            if !f.get() {
+                let mut view = v.borrow_mut();
+                for frame in &frames {
+                    view.push(frame);
+                }
+                view.advance(clock.frame_time());
+                area.queue_draw();
+            }
             glib::ControlFlow::Continue
         });
 
-        let analyzer = Rc::new(Self { widget: widget.clone(), shared, capture: RefCell::new(None), view });
-        analyzer.set_style(style());
+        let analyzer = Rc::new(Self { widget: widget.clone(), sources, compact, capture, view, frozen });
+        analyzer.set_style(style);
         let a = analyzer.clone();
         widget.connect_map(move |_| a.start());
         let a = analyzer.clone();
@@ -143,29 +123,21 @@ impl Analyzer {
         analyzer
     }
 
-    fn start(&self) {
-        if self.capture.borrow().is_some() {
-            return;
+    pub fn start(&self) {
+        if self.capture.borrow().is_none() {
+            self.view.borrow_mut().reset();
+            self.capture.replace(Some(Capture::start(self.sources)));
         }
-        {
-            let mut s = self.shared.lock().unwrap();
-            s.error = None;
-            s.bands.fill(DB_FLOOR);
-            s.left.fill(DB_FLOOR);
-            s.right.fill(DB_FLOOR);
-        }
-        let stop = Arc::new(AtomicBool::new(false));
-        let (stop_flag, shared) = (stop.clone(), self.shared.clone());
-        let thread = thread::spawn(move || {
-            if let Err(e) = run(&stop_flag, &shared) {
-                let mut s = shared.lock().unwrap();
-                s.error = Some(e);
-                s.bands.fill(DB_FLOOR);
-                s.left.fill(DB_FLOOR);
-                s.right.fill(DB_FLOOR);
-            }
-        });
-        self.capture.replace(Some(Capture { stop, thread }));
+    }
+
+    /// Stop capturing and restore the X4's recording source. Blocks briefly.
+    pub fn stop(&self) {
+        drop(self.capture.take());
+    }
+
+    /// The audio source in use, once capture has started.
+    pub fn source(&self) -> Option<crate::analysis::Source> {
+        self.capture.borrow().as_ref().and_then(Capture::source)
     }
 
     /// Shade the range below `crossover` as the subwoofer's; None while the sub is off.
@@ -178,165 +150,15 @@ impl Analyzer {
         let mut view = self.view.borrow_mut();
         view.style = style;
         view.history.clear();
-        self.widget.set_content_height(if style == Style::Bars { 150 } else { TALL });
+        if self.compact {
+            self.widget.set_content_height(if style == Style::Bars { 150 } else { TALL });
+        }
         self.widget.queue_draw();
     }
 
-    /// Stop capturing and restore the X4's recording source. Blocks briefly.
-    pub fn stop(&self) {
-        if let Some(capture) = self.capture.take() {
-            capture.stop.store(true, Ordering::Relaxed);
-            let _ = capture.thread.join();
-        }
-    }
-}
-
-fn run(stop: &AtomicBool, shared: &Mutex<Shared>) -> Result<(), String> {
-    // Open the PCM first: if something else is recording from the X4, it's
-    // busy and we leave its recording source alone.
-    let pcm = open_pcm().map_err(|e| format!("Can't open the X4's capture device: {e}"))?;
-    let loopback = Loopback::enable().map_err(|e| format!("Can't switch the X4 to What U Hear: {e}"))?;
-    let result = capture(&pcm, stop, shared);
-    loopback.restore();
-    result
-}
-
-fn open_pcm() -> alsa::Result<PCM> {
-    let pcm = PCM::new(PCM_DEVICE, Direction::Capture, false)?;
-    {
-        let hwp = HwParams::any(&pcm)?;
-        hwp.set_access(Access::RWInterleaved)?;
-        hwp.set_format(Format::s16())?;
-        hwp.set_channels(2)?;
-        hwp.set_rate(RATE, ValueOr::Nearest)?;
-        hwp.set_period_size_near(512, ValueOr::Nearest)?;
-        hwp.set_buffer_size_near(8192)?;
-        pcm.hw_params(&hwp)?;
-    }
-    Ok(pcm)
-}
-
-fn capture(pcm: &PCM, stop: &AtomicBool, shared: &Mutex<Shared>) -> Result<(), String> {
-    let io = pcm.io_i16().map_err(|e| e.to_string())?;
-    let window: Vec<f32> = (0..FFT_SIZE)
-        .map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / FFT_SIZE as f32).cos())
-        .collect();
-    // Scales a full-scale sine to 0 dBFS.
-    let norm = 2.0 / window.iter().sum::<f32>();
-    let fft = FftPlanner::new().plan_fft_forward(FFT_SIZE);
-    let bins = band_bins();
-
-    let (mut ring_l, mut ring_r) = (vec![0f32; FFT_SIZE], vec![0f32; FFT_SIZE]);
-    let mut pos = 0;
-    let mut since_fft = 0;
-    let mut buf = vec![0i16; 512 * 2];
-    let mut spectrum = vec![Complex::default(); FFT_SIZE];
-
-    // Capture otherwise only starts on the first read, and we wait before reading.
-    pcm.start().map_err(|e| e.to_string())?;
-    while !stop.load(Ordering::Relaxed) {
-        // Time out regularly so a stalled device can't block stopping.
-        if !pcm.wait(Some(100)).map_err(|e| e.to_string())? {
-            continue;
-        }
-        let frames = match io.readi(&mut buf) {
-            Ok(n) => n,
-            Err(e) => {
-                pcm.try_recover(e, true).map_err(|e| e.to_string())?;
-                continue;
-            }
-        };
-        for frame in buf[..frames * 2].chunks_exact(2) {
-            ring_l[pos] = f32::from(frame[0]) / 32768.0;
-            ring_r[pos] = f32::from(frame[1]) / 32768.0;
-            pos = (pos + 1) % FFT_SIZE;
-        }
-        since_fft += frames;
-        if since_fft < HOP {
-            continue;
-        }
-        since_fft %= HOP;
-
-        // Oldest sample first.
-        let at = |ring: &[f32], i: usize| ring[(pos + i) % FFT_SIZE];
-        let mut levels = |sample: &dyn Fn(usize) -> f32| -> Vec<f32> {
-            for (i, (out, w)) in spectrum.iter_mut().zip(&window).enumerate() {
-                *out = Complex::new(sample(i) * w, 0.0);
-            }
-            fft.process(&mut spectrum);
-            bins.iter()
-                .map(|&(lo, hi)| {
-                    let peak = spectrum[lo..=hi].iter().map(|c| c.norm()).fold(0.0, f32::max);
-                    (20.0 * (peak * norm).max(1e-9).log10()).max(DB_FLOOR)
-                })
-                .collect()
-        };
-        let bands = levels(&|i| (at(&ring_l, i) + at(&ring_r, i)) / 2.0);
-        let left = levels(&|i| at(&ring_l, i));
-        let right = levels(&|i| at(&ring_r, i));
-        let mut s = shared.lock().unwrap();
-        s.left = left;
-        s.right = right;
-        s.bands = bands;
-        s.seq += 1;
-    }
-    Ok(())
-}
-
-/// FFT bin range for each log-spaced band. Low bands narrower than one bin
-/// use the bin nearest their center.
-fn band_bins() -> Vec<(usize, usize)> {
-    let df = f64::from(RATE) / FFT_SIZE as f64;
-    (0..BANDS)
-        .map(|i| {
-            let (lo, hi) = (band_edge(i), band_edge(i + 1));
-            let (a, b) = ((lo / df).ceil() as usize, (hi / df).floor() as usize);
-            if a <= b {
-                (a, b)
-            } else {
-                let center = ((lo * hi).sqrt() / df).round() as usize;
-                (center, center)
-            }
-        })
-        .collect()
-}
-
-fn band_edge(i: usize) -> f64 {
-    F_MIN * (F_MAX / F_MIN).powf(i as f64 / BANDS as f64)
-}
-
-/// Switches the X4's recording source to What U Hear and remembers what to put back.
-struct Loopback {
-    mixer: Mixer,
-    source: Option<u32>,
-    switch: Option<i32>,
-}
-
-impl Loopback {
-    fn enable() -> alsa::Result<Self> {
-        let mixer = Mixer::new(MIXER_DEVICE, false)?;
-        let (mut source, mut switch) = (None, None);
-        if let Some(s) = mixer.find_selem(&SelemId::new("PCM Capture Source", 0)) {
-            let index = s.iter_enum()?.position(|name| name.is_ok_and(|n| n == "What U Hear"));
-            if let Some(index) = index {
-                source = s.get_enum_item(CHANNEL).ok();
-                s.set_enum_item(CHANNEL, index as u32)?;
-            }
-        }
-        if let Some(s) = mixer.find_selem(&SelemId::new("What U Hear", 0)) {
-            switch = s.get_capture_switch(CHANNEL).ok();
-            s.set_capture_switch_all(1)?;
-        }
-        Ok(Self { mixer, source, switch })
-    }
-
-    fn restore(&self) {
-        if let (Some(item), Some(s)) = (self.source, self.mixer.find_selem(&SelemId::new("PCM Capture Source", 0))) {
-            let _ = s.set_enum_item(CHANNEL, item);
-        }
-        if let (Some(on), Some(s)) = (self.switch, self.mixer.find_selem(&SelemId::new("What U Hear", 0))) {
-            let _ = s.set_capture_switch_all(on);
-        }
+    /// Hold the picture still; capture carries on.
+    pub fn set_frozen(&self, frozen: bool) {
+        self.frozen.set(frozen);
     }
 }
 
@@ -379,7 +201,8 @@ struct View {
     crossover: Option<f64>,
     /// Spectrogram rows as pixels, newest first.
     history: VecDeque<Vec<u8>>,
-    last_seq: u64,
+    /// The newest frame's bands: mixed, left, right.
+    latest: [Vec<f32>; 3],
     /// Smoothed bass level for the ring's pulse, 0–1.
     bass: f32,
 }
@@ -394,21 +217,36 @@ impl View {
             last_frame: 0,
             crossover: None,
             history: VecDeque::with_capacity(HISTORY),
-            last_seq: 0,
+            latest: [(); 3].map(|_| vec![DB_FLOOR; BANDS]),
             bass: 0.0,
         }
     }
 
-    fn advance(&mut self, bands: &[f32], left: &[f32], right: &[f32], seq: u64, frame_time_us: i64) {
-        let dt = if self.last_frame == 0 { 0.0 } else { ((frame_time_us - self.last_frame) as f32 / 1e6).min(0.1) };
-        self.last_frame = frame_time_us;
-        if self.style == Style::Spectrogram && seq != self.last_seq {
+    /// Back to silence, for a new capture.
+    fn reset(&mut self) {
+        self.history.clear();
+        for bands in &mut self.latest {
+            bands.fill(DB_FLOOR);
+        }
+    }
+
+    /// Take a new frame. Every one becomes a spectrogram row, so it scrolls in
+    /// real time whatever the display's frame rate.
+    fn push(&mut self, frame: &Frame) {
+        if self.style == Style::Spectrogram {
             if self.history.len() == HISTORY {
                 self.history.pop_back();
             }
-            self.history.push_front(spectrogram_row(bands, &plot::Palette::current()));
+            self.history.push_front(spectrogram_row(&frame.bands, &plot::Palette::current()));
         }
-        self.last_seq = seq;
+        self.latest = [frame.bands.clone(), frame.left.clone(), frame.right.clone()];
+    }
+
+    /// Move the meters toward the newest frame, for a display frame at `frame_time_us`.
+    fn advance(&mut self, frame_time_us: i64) {
+        let dt = if self.last_frame == 0 { 0.0 } else { ((frame_time_us - self.last_frame) as f32 / 1e6).min(0.1) };
+        self.last_frame = frame_time_us;
+        let [bands, left, right] = &self.latest;
         self.mono.advance(bands, dt);
         if self.style == Style::Ring {
             self.left.advance(left, dt);
@@ -417,7 +255,7 @@ impl View {
         // The ring pulses with the subwoofer's range, or the lowest bass with the sub off.
         let cutoff = self.crossover.unwrap_or(100.0);
         let bass_db = (0..BANDS)
-            .filter(|&i| (band_edge(i) * band_edge(i + 1)).sqrt() < cutoff)
+            .filter(|&i| band_center(i) < cutoff)
             .map(|i| self.mono.level[i])
             .fold(DB_FLOOR, f32::max);
         let target = ((bass_db + 50.0) / 40.0).clamp(0.0, 1.0);
@@ -535,7 +373,7 @@ fn draw_ring(cr: &cairo::Context, w: f64, h: f64, view: &View, error: Option<&st
     let start = inner + 3.0;
     let reach = (outer - start - 6.0).max(4.0);
     let step = PI / BANDS as f64;
-    let is_sub = |i: usize| view.crossover.is_some_and(|f| (band_edge(i) * band_edge(i + 1)).sqrt() < f);
+    let is_sub = |i: usize| view.crossover.is_some_and(|f| band_center(i) < f);
     // Spokes and peak dashes as thin quads, filled in one pass per color.
     // (Round caps and dot-shaped peaks cost noticeably more to draw.)
     let half_width = (inner * step * 0.3).clamp(0.75, 3.0);
@@ -655,17 +493,4 @@ pub fn style() -> Style {
 
 pub fn set_style(style: Style) {
     ui::set("spectrum-style", style.key().into());
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bands_cover_the_spectrum_in_order() {
-        let bins = band_bins();
-        assert_eq!(bins.len(), BANDS);
-        assert!(bins.windows(2).all(|w| w[0].0 <= w[1].0));
-        assert!(bins.last().unwrap().1 < FFT_SIZE / 2);
-    }
 }

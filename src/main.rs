@@ -1,15 +1,14 @@
 mod device;
 mod eq_page;
 mod mixer_page;
-mod plot;
 mod presets;
 mod room_ui;
 mod sbx;
 mod sbx_page;
-mod spectrum;
 mod tone;
 mod tray;
-mod ui;
+
+use sbx4_control::{plot, spectrum, ui};
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
