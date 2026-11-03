@@ -28,6 +28,10 @@ GTK control panel for the Creative Sound Blaster X4 (USB `041e:3278`) on Linux.
   shows the output after the X4's own EQ. While it's on screen, the X4's
   recording source is switched to What U Hear; it's restored when the analyzer
   is hidden or the app quits.
+  Three styles: **Bars**; a scrolling **Spectrogram** of the last few seconds,
+  where room-EQ cuts and kick drums show up; and a **Ring** with the left
+  channel on the left half and the right on the right, which swells with the
+  bass below the subwoofer's crossover.
 - **Effects** page: approximations of Creative's SBX effects (Surround,
   Dialog+, Bass, Crystalizer, Smart Volume). The X4 doesn't do these in
   hardware; on Windows, Creative's driver runs them on the PC. Here they run

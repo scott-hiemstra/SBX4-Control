@@ -176,11 +176,26 @@ impl EqPage {
             .subtitle("Listens through the X4's What U Hear loopback")
             .activatable_widget(&spectrum_switch)
             .build();
+        let titles: Vec<&str> = spectrum::Style::ALL.iter().map(|s| s.title()).collect();
+        let style_picker = gtk::DropDown::from_strings(&titles);
+        style_picker.set_valign(gtk::Align::Center);
+        let current = spectrum::Style::ALL.iter().position(|&s| s == spectrum::style()).unwrap_or(0);
+        style_picker.set_selected(current as u32);
+        let a = analyzer.clone();
+        style_picker.connect_selected_notify(move |dd| {
+            if let Some(&style) = spectrum::Style::ALL.get(dd.selected() as usize) {
+                a.set_style(style);
+                spectrum::set_style(style);
+            }
+        });
+        spectrum_row.add_suffix(&style_picker);
         spectrum_row.add_suffix(&spectrum_switch);
         analyzer_card.set_visible(spectrum_switch.is_active());
-        let c = analyzer_card.clone();
+        style_picker.set_sensitive(spectrum_switch.is_active());
+        let (c, picker) = (analyzer_card.clone(), style_picker.clone());
         spectrum_switch.connect_active_notify(move |sw| {
             c.set_visible(sw.is_active());
+            picker.set_sensitive(sw.is_active());
             spectrum::set_enabled(sw.is_active());
         });
 
