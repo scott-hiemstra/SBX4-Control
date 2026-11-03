@@ -68,6 +68,25 @@ Needs PipeWire 1.0+ for effects (Ubuntu 24.04, Debian 12+). The tray needs a
 StatusNotifierItem host: Ubuntu's built-in AppIndicator extension, or
 `gnome-shell-extension-appindicator` on Debian.
 
+### SBX4 Visualizer
+
+A second app in the same package (`sbx4-visualizer`, "SBX4 Visualizer" in the
+app menu): visualizations of what's playing that can go fullscreen. It listens
+to the X4's What U Hear loopback when the X4 is there and free, and otherwise
+to PipeWire's default output through `pw-record`.
+
+- **Bars, Spectrogram, Ring**: the control panel's analyzer styles, full size.
+- **Rhythm**: transients detected in four lanes (bass, low mids, high mids,
+  treble) against a tracked beat, as a scrolling **Timeline**, a step-sequencer
+  **Pulse Grid**, or a **Circular Rhythm** that goes round once a bar. Tempo is
+  detected (or set by hand, or tapped); the time signature is estimated, and
+  shown as an estimate with its confidence, or chosen. Optional markers for
+  repeating rhythms, syncopation and suspected polyrhythms.
+
+Double-click or F11 for fullscreen, Escape to leave; the controls can hide
+themselves there. Space freezes the picture, T taps the tempo. Settings are
+kept in `~/.config/sbx4-control/visualizer.json`.
+
 ## Install
 
 ### Debian and Ubuntu: APT repository (recommended)

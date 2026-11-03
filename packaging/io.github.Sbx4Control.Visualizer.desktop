@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=SBX4 Visualizer
+GenericName=Audio Visualizer
+Comment=Spectrum and rhythm visualizations of what's playing, fullscreen if you like
+Exec=sbx4-visualizer
+Icon=audio-x-generic
+Terminal=false
+Categories=AudioVideo;Audio;
+Keywords=spectrum;analyzer;rhythm;beat;bpm;tempo;visualizer;
+StartupNotify=true

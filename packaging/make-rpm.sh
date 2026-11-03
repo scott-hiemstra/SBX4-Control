@@ -28,11 +28,14 @@ Recommends:     lsp-plugins-lv2
 A control panel for the Creative Sound Blaster X4 USB sound card: hardware
 equalizer and output switching, a spectrum analyzer, SBX-style effects, a
 subwoofer crossover, room EQ tuned by ear, mixer controls and a tray icon.
+Also a fullscreen-capable spectrum and rhythm visualizer (sbx4-visualizer).
 Effects, subwoofer and room EQ run on PipeWire. Not affiliated with Creative
 Technology Ltd.
 
 %install
 install -Dm755 $PWD/$bin %{buildroot}%{_bindir}/sbx4-control
+install -Dm755 $PWD/$(dirname "$bin")/sbx4-visualizer %{buildroot}%{_bindir}/sbx4-visualizer
+install -Dm644 $PWD/packaging/io.github.Sbx4Control.Visualizer.desktop %{buildroot}%{_datadir}/applications/io.github.Sbx4Control.Visualizer.desktop
 install -Dm644 $PWD/packaging/io.github.Sbx4Control.desktop %{buildroot}%{_datadir}/applications/io.github.Sbx4Control.desktop
 install -Dm644 $PWD/packaging/70-sbx4-control.rules %{buildroot}/usr/lib/udev/rules.d/70-sbx4-control.rules
 install -Dm644 $PWD/packaging/io.github.Sbx4Control.metainfo.xml %{buildroot}/usr/share/metainfo/io.github.Sbx4Control.metainfo.xml
@@ -43,7 +46,9 @@ udevadm trigger --subsystem-match=tty --action=change >/dev/null 2>&1 || :
 
 %files
 %{_bindir}/sbx4-control
+%{_bindir}/sbx4-visualizer
 %{_datadir}/applications/io.github.Sbx4Control.desktop
+%{_datadir}/applications/io.github.Sbx4Control.Visualizer.desktop
 /usr/lib/udev/rules.d/70-sbx4-control.rules
 /usr/share/metainfo/io.github.Sbx4Control.metainfo.xml
 SPEC

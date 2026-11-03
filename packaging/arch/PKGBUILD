@@ -8,7 +8,7 @@ url="https://github.com/scott-hiemstra/SBX4-Control"
 license=('MIT')
 depends=('gtk4' 'libadwaita' 'alsa-lib' 'glibc' 'gcc-libs')
 makedepends=('cargo')
-optdepends=('pipewire: SBX effects and subwoofer crossover'
+optdepends=('pipewire: SBX effects, subwoofer crossover, and the visualizer without the X4'
             'wireplumber: SBX effects and subwoofer crossover'
             'lsp-plugins-lv2: Smart Volume')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
@@ -29,6 +29,8 @@ build() {
 package() {
   cd "SBX4-Control-$pkgver"
   install -Dm755 target/release/sbx4-control "$pkgdir/usr/bin/sbx4-control"
+  install -Dm755 target/release/sbx4-visualizer "$pkgdir/usr/bin/sbx4-visualizer"
+  install -Dm644 packaging/io.github.Sbx4Control.Visualizer.desktop "$pkgdir/usr/share/applications/io.github.Sbx4Control.Visualizer.desktop"
   install -Dm644 packaging/io.github.Sbx4Control.desktop "$pkgdir/usr/share/applications/io.github.Sbx4Control.desktop"
   install -Dm644 packaging/70-sbx4-control.rules "$pkgdir/usr/lib/udev/rules.d/70-sbx4-control.rules"
   install -Dm644 packaging/io.github.Sbx4Control.metainfo.xml "$pkgdir/usr/share/metainfo/io.github.Sbx4Control.metainfo.xml"

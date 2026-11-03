@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Package target/release/sbx4-control as a .deb. Runs inside the build container.
+# Package target/release/sbx4-control (and sbx4-visualizer beside it) as a .deb.
+# Runs inside the build container.
 set -euo pipefail
 
 bin=${1:-target/release/sbx4-control}
@@ -8,6 +9,8 @@ root=target/deb/sbx4-control_${version}_amd64
 rm -rf "$root"
 
 install -Dm755 "$bin" "$root/usr/bin/sbx4-control"
+install -Dm755 "$(dirname "$bin")/sbx4-visualizer" "$root/usr/bin/sbx4-visualizer"
+install -Dm644 packaging/io.github.Sbx4Control.Visualizer.desktop "$root/usr/share/applications/io.github.Sbx4Control.Visualizer.desktop"
 install -Dm644 packaging/io.github.Sbx4Control.desktop "$root/usr/share/applications/io.github.Sbx4Control.desktop"
 install -Dm644 packaging/70-sbx4-control.rules "$root/usr/lib/udev/rules.d/70-sbx4-control.rules"
 install -Dm644 packaging/io.github.Sbx4Control.metainfo.xml "$root/usr/share/metainfo/io.github.Sbx4Control.metainfo.xml"
@@ -32,6 +35,8 @@ Description: Control panel for the Creative Sound Blaster X4
   - Speaker and headphone output switching
   - The X4's 10-band hardware equalizer and pre-amp, with presets
   - A spectrum analyzer on the X4's own loopback
+  - A separate visualizer: spectrum views and a rhythm view with beat
+    tracking, fullscreen, on the X4 or whatever PipeWire is playing
   - SBX-style effects: Surround, Dialog+, Bass, Crystalizer, Smart Volume
   - Subwoofer crossover with level and polarity
   - Room EQ that tames booming bass by ear, no microphone needed
