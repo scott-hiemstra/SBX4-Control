@@ -16,10 +16,14 @@ pub enum View {
     Spectrogram,
     Ring,
     Rhythm,
+    Tunnel,
+    Landscape,
+    Plasma,
 }
 
 impl View {
-    pub const ALL: [View; 4] = [View::Bars, View::Spectrogram, View::Ring, View::Rhythm];
+    pub const ALL: [View; 7] =
+        [View::Bars, View::Spectrogram, View::Ring, View::Rhythm, View::Tunnel, View::Landscape, View::Plasma];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -27,6 +31,9 @@ impl View {
             View::Spectrogram => "Spectrogram",
             View::Ring => "Ring",
             View::Rhythm => "Rhythm",
+            View::Tunnel => "Frequency Tunnel",
+            View::Landscape => "Spectrum Landscape",
+            View::Plasma => "Plasma",
         }
     }
 }

@@ -9,6 +9,7 @@ mod controls;
 mod prefs;
 mod rhythm;
 mod rhythm_view;
+mod scenes;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -22,6 +23,7 @@ use sbx4_control::spectrum::{Analyzer, Style};
 use controls::Controls;
 use prefs::{Prefs, Theme, View};
 use rhythm_view::RhythmView;
+use scenes::{Kind, SceneView};
 
 const APP_ID: &str = "io.github.Sbx4Control.Visualizer";
 /// Fullscreen controls hide after this long without the mouse moving.
@@ -46,6 +48,7 @@ struct Visualizer {
     stack: gtk::Stack,
     analyzers: Vec<(View, Rc<Analyzer>)>,
     rhythm: Rc<RhythmView>,
+    scenes: Vec<(View, Rc<SceneView>)>,
     controls: Rc<Controls>,
     header: adw::HeaderBar,
     title: adw::WindowTitle,
@@ -80,6 +83,14 @@ impl Visualizer {
             .collect();
         let rhythm = RhythmView::new(prefs.clone());
         stack.add_named(&rhythm.widget, Some(View::Rhythm.title()));
+        let scenes: Vec<(View, Rc<SceneView>)> = [(View::Tunnel, Kind::Tunnel), (View::Landscape, Kind::Landscape), (View::Plasma, Kind::Plasma)]
+            .into_iter()
+            .map(|(view, kind)| {
+                let scene = SceneView::new(kind, prefs.clone());
+                stack.add_named(&scene.widget, Some(view.title()));
+                (view, scene)
+            })
+            .collect();
 
         // Header: the view picker, freeze, fullscreen, settings and the menu.
         let views: Vec<&str> = View::ALL.iter().map(|v| v.title()).collect();
@@ -144,6 +155,7 @@ impl Visualizer {
             stack,
             analyzers,
             rhythm,
+            scenes,
             controls,
             header,
             title,
@@ -208,6 +220,10 @@ impl Visualizer {
         self.analyzers.iter().find(|(v, _)| *v == view).map(|(_, a)| a)
     }
 
+    fn scene(&self, view: View) -> Option<&Rc<SceneView>> {
+        self.scenes.iter().find(|(v, _)| *v == view).map(|(_, s)| s)
+    }
+
     fn show_view(&self, view: View) {
         self.stack.set_visible_child_name(view.title());
         self.controls.show_for(view);
@@ -216,9 +232,10 @@ impl Visualizer {
 
     fn update_title(&self) {
         let view = self.prefs.borrow().view;
-        let source = match self.analyzer(view) {
-            Some(a) => a.source(),
-            None => self.rhythm.source(),
+        let source = match (self.analyzer(view), self.scene(view)) {
+            (Some(a), _) => a.source(),
+            (_, Some(s)) => s.source(),
+            _ => self.rhythm.source(),
         };
         self.title.set_title(view.title());
         self.title.set_subtitle(source.map_or("", |s| s.title()));
@@ -243,6 +260,9 @@ impl Visualizer {
         self.rhythm.set_frozen(frozen);
         for (_, a) in &self.analyzers {
             a.set_frozen(frozen);
+        }
+        for (_, s) in &self.scenes {
+            s.set_frozen(frozen);
         }
     }
 
@@ -387,12 +407,22 @@ impl Visualizer {
                 let Some(v) = vv.upgrade() else { return };
                 let view = v.prefs.borrow().view;
                 let minimized = t.state().contains(gdk::ToplevelState::MINIMIZED);
-                match (v.analyzer(view), minimized) {
-                    (Some(a), true) => a.stop(),
-                    (Some(a), false) if a.widget.is_mapped() => a.start(),
-                    (None, true) => v.rhythm.stop(),
-                    (None, false) if v.rhythm.widget.is_mapped() => v.rhythm.start(),
-                    _ => {}
+                if let Some(a) = v.analyzer(view) {
+                    if minimized {
+                        a.stop();
+                    } else if a.widget.is_mapped() {
+                        a.start();
+                    }
+                } else if let Some(s) = v.scene(view) {
+                    if minimized {
+                        s.stop();
+                    } else if s.widget.is_mapped() {
+                        s.start();
+                    }
+                } else if minimized {
+                    v.rhythm.stop();
+                } else if v.rhythm.widget.is_mapped() {
+                    v.rhythm.start();
                 }
             });
         });

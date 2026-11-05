@@ -744,7 +744,7 @@ fn estimate_phase(envelope: &VecDeque<f32>, now: f64, period: f64) -> (f64, f32)
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// Frames for `seconds` of audio with flux spikes where `hit` says, over a
@@ -814,13 +814,11 @@ mod tests {
         }
     }
 
-    /// A drum loop synthesized at 124 BPM, through the whole audio pipeline:
-    /// kick on 1 and the "and" of 2, snare on 2 and 4, hi-hat on the eighths.
-    #[test]
-    fn drum_loop_end_to_end() {
+    /// `seconds` of a drum loop at `bpm` as 48 kHz 16-bit stereo: kick on 1
+    /// and the "and" of 2, snare on 2 and 4, hi-hat on the eighths.
+    pub(crate) fn drum_loop(seconds: f64, bpm: f64) -> Vec<i16> {
         let rate = f64::from(sbx4_control::analysis::RATE);
-        let beat = 60.0 / 124.0;
-        let seconds = 20.0;
+        let beat = 60.0 / bpm;
         let n = (seconds * rate) as usize;
         let mut mix = vec![0f32; n];
         let mut seed = 7u32;
@@ -856,10 +854,20 @@ mod tests {
                 });
             }
         }
-        let samples: Vec<i16> = mix.iter().flat_map(|&s| {
-            let v = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
-            [v, v]
-        }).collect();
+        mix.iter()
+            .flat_map(|&s| {
+                let v = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
+                [v, v]
+            })
+            .collect()
+    }
+
+    /// A drum loop synthesized at 124 BPM, through the whole audio pipeline.
+    #[test]
+    fn drum_loop_end_to_end() {
+        let beat = 60.0 / 124.0;
+        let seconds = 20.0;
+        let samples = drum_loop(seconds, 124.0);
 
         let mut r = Rhythm::new();
         for frame in sbx4_control::analysis::analyze(&samples) {

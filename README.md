@@ -82,6 +82,12 @@ to PipeWire's default output through `pw-record`.
   detected (or set by hand, or tapped); the time signature is estimated, and
   shown as an estimate with its confidence, or chosen. Optional markers for
   repeating rhythms, syncopation and suspected polyrhythms.
+- **Frequency Tunnel**: rings carrying the spectrum rush outward, one on each
+  beat (or bass hit when there's no steady beat).
+- **Spectrum Landscape**: a 3D terrain with frequency across, level as height,
+  and the last couple of seconds receding into the distance.
+- **Plasma**: flowing color fields; the bass drives broad waves, the treble
+  fine ripples.
 
 Double-click or F11 for fullscreen, Escape to leave; the controls can hide
 themselves there. Space freezes the picture, T taps the tempo. Settings are
