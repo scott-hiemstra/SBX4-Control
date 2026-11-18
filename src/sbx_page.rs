@@ -65,6 +65,8 @@ pub struct SbxPage {
     updating: Cell<bool>,
     flush_pending: Cell<bool>,
     starting: Cell<bool>,
+    /// A background check of the X4's sink is in flight.
+    checking: Cell<bool>,
     /// Set when starting failed; cleared by toggling SBX or replugging the X4.
     failed: Cell<bool>,
 }
@@ -207,6 +209,7 @@ impl SbxPage {
             updating: Cell::new(false),
             flush_pending: Cell::new(false),
             starting: Cell::new(false),
+            checking: Cell::new(false),
             failed: Cell::new(false),
         });
         page.load_widgets();
@@ -615,7 +618,37 @@ impl SbxPage {
             self.set_status("Waiting for the Sound Blaster X4…");
         } else if !running && !self.failed.get() {
             self.try_start();
+        } else if running {
+            self.check_sink();
         }
+    }
+
+    /// Restart the filter if the X4's sink changed under it, e.g. WirePlumber
+    /// switched the X4 to its 2.1 profile just after the filter started, which
+    /// leaves the sub silent. `pw-dump` runs off the main thread.
+    fn check_sink(self: &Rc<Self>) {
+        if self.checking.replace(true) {
+            return;
+        }
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = tx.send_blocking(sbx::x4_sink());
+        });
+        let p = self.clone();
+        glib::spawn_future_local(async move {
+            let sink = rx.recv().await.ok().flatten();
+            p.checking.set(false);
+            // The sink can vanish briefly while the profile changes; the next
+            // tick sees the new one.
+            let Some(sink) = sink else { return };
+            if !p.settings.borrow().wants_filter() || p.starting.get() || !p.engine.borrow_mut().is_running() {
+                return;
+            }
+            if p.engine.borrow().is_stale(&sink) {
+                p.stop(false);
+                p.try_start();
+            }
+        });
     }
 
     fn try_start(self: &Rc<Self>) {

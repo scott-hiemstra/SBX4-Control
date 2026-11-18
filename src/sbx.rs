@@ -253,17 +253,26 @@ pub struct Engine {
     compressor: bool,
     /// The X4 sink the filter feeds has an LFE channel.
     lfe: bool,
+    /// Name of the X4 sink the filter was built for.
+    target: String,
     /// Control values the filter has now, so updates only send changes.
     sent: HashMap<String, f64>,
 }
 
 impl Engine {
     pub fn new() -> Self {
-        Self { child: None, node_id: None, compressor: compressor_available(), lfe: false, sent: HashMap::new() }
+        Self { child: None, node_id: None, compressor: compressor_available(), lfe: false, target: String::new(), sent: HashMap::new() }
     }
 
     pub fn has_compressor(&self) -> bool {
         self.compressor
+    }
+
+    /// Whether the running filter was built for a different X4 sink than
+    /// `x4_sink`, e.g. the X4 switched to or from its 2.1 profile after the
+    /// filter started, so the sub stage is missing or feeds nothing.
+    pub fn is_stale(&self, x4_sink: &Sink) -> bool {
+        self.lfe != x4_sink.lfe || self.target != x4_sink.name
     }
 
     /// Build the graph without the LV2 compressor from now on, for a PipeWire
@@ -290,6 +299,7 @@ impl Engine {
     pub fn spawn(&mut self, settings: &Settings, x4_sink: &Sink) -> io::Result<()> {
         self.stop();
         self.lfe = x4_sink.lfe;
+        self.target = x4_sink.name.clone();
         let path = config_dir().join("sbx-filter.conf");
         fs::create_dir_all(config_dir())?;
         fs::write(&path, config(settings, self.compressor, &x4_sink.name, self.lfe))?;
